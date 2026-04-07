@@ -33,25 +33,24 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 
 PRESET_MODELS = {
-    # Top 15 by OpenRouter usage + key Chinese/open-source models
-    # --- Proprietary leaders ---
+    # All models verified working on HF Inference API (free with HF_TOKEN)
+    # Tested 2026-04-07 via router.huggingface.co/v1/chat/completions
+    #
+    # --- Chinese open-source ---
+    "GLM 5.1 (754B MoE)": "huggingface/zai-org/GLM-5.1",
+    "GLM 5 (400B MoE)": "huggingface/zai-org/GLM-5",
+    "Qwen3 32B": "huggingface/Qwen/Qwen3-32B",
+    "DeepSeek R1": "huggingface/deepseek-ai/DeepSeek-R1",
+    "Kimi K2 Instruct": "huggingface/moonshotai/Kimi-K2-Instruct",
+    "MiniMax M2.5": "huggingface/MiniMaxAI/MiniMax-M2.5",
+    # --- Google open-source ---
+    "Gemma 4 26B MoE": "huggingface/google/gemma-4-26B-A4B-it",
+    # --- Meta open-source ---
+    "Llama 3.3 70B": "huggingface/meta-llama/Llama-3.3-70B-Instruct",
+    "Llama 3.1 70B": "huggingface/meta-llama/Llama-3.1-70B-Instruct",
+    # --- Anthropic (proprietary, uses ANTHROPIC_API_KEY) ---
     "Claude Sonnet 4.6": "anthropic/claude-sonnet-4-6",
     "Claude Opus 4.6": "anthropic/claude-opus-4-6",
-    "GPT-5.4": "openai/gpt-5.4",
-    "GPT-5.4 Mini": "openai/gpt-5.4-mini",
-    "Gemini 3.1 Pro": "google/gemini-3.1-pro-preview",
-    "Gemini 3 Flash": "google/gemini-3-flash-preview",
-    "Grok 4.20": "x-ai/grok-4.20",
-    # --- Chinese models ---
-    "Qwen 3.6 Plus": "qwen/qwen3.6-plus",
-    "DeepSeek V3.1": "deepseek/deepseek-chat-v3.1",
-    "Kimi K2.5": "moonshotai/kimi-k2.5",
-    "MiniMax M2.7": "minimax/minimax-m2.7",
-    "GLM 5.1": "z-ai/glm-5.1",
-    "GLM 5 Turbo": "z-ai/glm-5-turbo",
-    # --- Open-source (via HF Inference or OpenRouter free) ---
-    "Gemma 4 31B": "google/gemma-4-31b-it",
-    "Llama 3.3 70B": "meta-llama/llama-3.3-70b-instruct",
 }
 
 # ---------------------------------------------------------------------------
@@ -278,25 +277,21 @@ with gr.Blocks(title="ClawBench", theme=gr.themes.Base()) as demo:
         )
 
         gr.Markdown("""
-**15 preset models (by OpenRouter usage ranking):**
+**All presets verified working on HF Inference API (free):**
 
-| Model | Provider | Notes |
-|-------|----------|-------|
-| Claude Sonnet 4.6 | Anthropic | #1 on OpenRouter |
-| Claude Opus 4.6 | Anthropic | Flagship |
-| GPT-5.4 | OpenAI | Latest |
-| GPT-5.4 Mini | OpenAI | Cost-efficient |
-| Gemini 3.1 Pro | Google | Latest |
-| Gemini 3 Flash | Google | Fast |
-| Grok 4.20 | xAI | Latest |
-| Qwen 3.6 Plus | Alibaba | Latest Chinese |
-| DeepSeek V3.1 | DeepSeek | Latest |
-| Kimi K2.5 | Moonshot AI | Latest |
-| MiniMax M2.7 | MiniMax | Latest |
-| GLM 5.1 | Zhipu AI | Latest |
-| GLM 5 Turbo | Zhipu AI | Fast |
-| Gemma 4 31B | Google | Open-source |
-| Llama 3.3 70B | Meta | Open-source |
+| Model | Provider | Size | API |
+|-------|----------|------|-----|
+| GLM 5.1 | Z.ai | 754B MoE | HF free |
+| GLM 5 | Z.ai | 400B MoE | HF free |
+| Qwen3 32B | Alibaba | 32B | HF free |
+| DeepSeek R1 | DeepSeek | 671B MoE | HF free |
+| Kimi K2 Instruct | Moonshot AI | MoE | HF free |
+| MiniMax M2.5 | MiniMax | MoE | HF free |
+| Gemma 4 26B MoE | Google | 26B MoE | HF free |
+| Llama 3.3 70B | Meta | 70B | HF free |
+| Llama 3.1 70B | Meta | 70B | HF free |
+| Claude Sonnet 4.6 | Anthropic | - | API key |
+| Claude Opus 4.6 | Anthropic | - | API key |
 """)
 
     with gr.Tab("Queue"):
