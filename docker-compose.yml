@@ -1,0 +1,14 @@
+# Local development: mimics HF Space environment
+services:
+  clawbench:
+    build: .
+    ports:
+      - "7860:7860"
+    environment:
+      - GATEWAY_PORT=18789
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - CLAWBENCH_QUEUE_DATASET=openclaw/clawbench-results
+    volumes:
+      - ./data:/data  # Persistent storage (mimics HF /data mount)

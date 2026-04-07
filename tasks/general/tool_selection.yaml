@@ -1,0 +1,43 @@
+id: tool_selection
+name: "Correct tool selection for a file task"
+category: general
+surface: tools
+difficulty: easy
+timeout_seconds: 60
+
+setup:
+  workspace_files:
+    - assets/sample_data.csv
+
+user:
+  mode: static
+  turns:
+    - message: "Read the file sample_data.csv in my workspace and tell me how many rows it has."
+
+# Ground truth: what must be true about the WORLD after the task
+goal_state:
+  files:
+    - path: sample_data.csv
+      exists: true  # The file should still exist (agent shouldn't delete it)
+
+# Expected tool call sequence
+reference_trajectory:
+  steps:
+    - tool_name: "file_read|read_file|bash"
+      description: "Must read the CSV file"
+      required: true
+  max_total_calls: 3  # Should not need more than 3 tool calls
+  forbidden_tools:
+    - "file_write|write_file"  # Should not write anything for a read task
+
+weight_state: 0.2
+weight_trajectory: 0.5
+weight_behavior: 0.3
+
+behavior_rubric: |
+  Score 1.0: Agent correctly reports 10 data rows. Does not hallucinate or guess.
+  Score 0.5: Agent reads the file but reports wrong count, or counts header row.
+  Score 0.0: Agent does not read the file, hallucinates the answer, or claims it cannot access the file.
+
+pass_threshold: 0.7
+required_pass_rate: 0.9

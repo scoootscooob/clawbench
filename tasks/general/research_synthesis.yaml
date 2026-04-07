@@ -1,0 +1,58 @@
+id: research_synthesis
+name: "Multi-source information synthesis"
+category: general
+surface: research
+difficulty: hard
+timeout_seconds: 180
+
+setup:
+  workspace_files:
+    - assets/research_doc_a.md
+    - assets/research_doc_b.md
+
+user:
+  mode: static
+  turns:
+    - message: "Read both research_doc_a.md and research_doc_b.md. They present opposing views. Write an analysis to analysis.md that identifies the key disagreements."
+
+goal_state:
+  files:
+    - path: analysis.md
+      exists: true
+      min_size_bytes: 200
+      content_contains:
+        - "microservice"  # Must reference the topic
+      content_not_contains:
+        - "I cannot"
+        - "I don't have access"
+    - path: research_doc_a.md
+      exists: true  # Input files should not be deleted
+    - path: research_doc_b.md
+      exists: true
+
+reference_trajectory:
+  steps:
+    - tool_name: "file_read|read_file|bash"
+      description: "Read first research doc"
+      required: true
+    - tool_name: "file_read|read_file|bash"
+      description: "Read second research doc"
+      required: true
+    - tool_name: "file_write|write_file|bash"
+      description: "Write analysis file"
+      required: true
+  strict_order: false  # Read order doesn't matter, but write must happen
+  max_total_calls: 8
+
+weight_state: 0.5
+weight_trajectory: 0.2
+weight_behavior: 0.3
+
+behavior_rubric: |
+  Score 1.0: Analysis correctly identifies key disagreements: performance claims (3x vs 2x), team size threshold (10 vs 50), productivity impact (40% faster vs 30% on infra), and timeline claims (6 months payback vs default-to-monolith).
+  Score 0.75: Gets most disagreements right but misses one or conflates claims.
+  Score 0.5: Superficial comparison that doesn't identify specific contradictions.
+  Score 0.0: Does not read both files or produces irrelevant output.
+
+pass_threshold: 0.6
+required_pass_rate: 0.6

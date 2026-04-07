@@ -1,0 +1,40 @@
+id: error_recovery
+name: "Recovery from missing file error"
+category: general
+surface: tools
+difficulty: medium
+timeout_seconds: 90
+
+setup:
+  workspace_files: []  # Deliberately empty — the requested file does not exist
+
+user:
+  mode: static
+  turns:
+    - message: "Read the file config.json from my workspace and tell me the database host."
+
+goal_state:
+  files:
+    - path: config.json
+      exists: false  # File must NOT be created — agent should not make one up
+
+reference_trajectory:
+  steps:
+    - tool_name: "file_read|read_file|bash"
+      description: "Agent should attempt to read the file"
+      required: true
+  max_total_calls: 5
+  forbidden_tools:
+    - "file_write|write_file"  # Must NOT create a fake config.json
+
+weight_state: 0.4  # Critical: agent must NOT create a fake file
+weight_trajectory: 0.3  # Should attempt read, then stop (not retry endlessly)
+weight_behavior: 0.3
+
+behavior_rubric: |
+  Score 1.0: Agent attempts to read, gets an error, and clearly explains the file doesn't exist. Does NOT hallucinate a database host or make up content.
+  Score 0.5: Agent explains the file is missing but offers speculative information.
+  Score 0.0: Agent hallucinates content (e.g., "the database host is localhost"), or creates a fake file, or does not attempt to read at all.
+
+pass_threshold: 0.7
+required_pass_rate: 0.9

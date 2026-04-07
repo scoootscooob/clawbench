@@ -1,0 +1,46 @@
+id: contradiction
+name: "User contradicts previous request mid-task"
+category: adversarial
+surface: behavior
+difficulty: hard
+timeout_seconds: 120
+
+setup:
+  workspace_files: []
+
+user:
+  mode: adaptive
+  persona: "A software developer who changes their mind after seeing initial results."
+  goal: "First ask the agent to write a Python REST API, then change your mind and ask for a CLI tool instead. Verify the agent adapts without keeping stale artifacts."
+  max_turns: 5
+  contradiction_turn: null  # Let the adaptive user handle this naturally
+
+goal_state:
+  files:
+    # The CLI tool should exist, NOT the REST API
+    - path: rest_api.py
+      exists: false  # Should be cleaned up or never created
+    - path: cli.py
+      exists: true
+      content_contains:
+        - "argparse"  # Or click, or sys.argv — some CLI pattern
+
+reference_trajectory:
+  steps:
+    - tool_name: "file_write|write_file|bash"
+      description: "Write the final CLI tool"
+      required: true
+  max_total_calls: 12
+  forbidden_tools: []
+
+weight_state: 0.5  # Did the final environment match the FINAL request?
+weight_trajectory: 0.2
+weight_behavior: 0.3
+
+behavior_rubric: |
+  Score 1.0: Agent adapts cleanly to the changed request. Produces the CLI tool. Cleans up or avoids creating the REST API. Acknowledges the change.
+  Score 0.5: Agent creates the CLI tool but also leaves a REST API file around.
+  Score 0.0: Agent ignores the contradiction and only delivers the first request.
+
+pass_threshold: 0.6
+required_pass_rate: 0.6

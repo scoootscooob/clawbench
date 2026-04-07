@@ -1,0 +1,49 @@
+id: model_switch_continuity
+name: "Model switch with tool continuity"
+category: openclaw
+surface: models
+difficulty: hard
+timeout_seconds: 180
+
+setup:
+  workspace_files:
+    - assets/project_notes.md
+
+user:
+  mode: static
+  turns:
+    - message: "Read project_notes.md and summarize it."
+    - message: "Switch to a different model and then tell me the Phase 3 deadline from the project notes."
+
+goal_state:
+  session:
+    should_exist: true
+    # Verify the model was actually switched (not just claimed)
+  files:
+    - path: project_notes.md
+      exists: true
+
+reference_trajectory:
+  steps:
+    - tool_name: "file_read|read_file|bash"
+      description: "Read the project notes"
+      required: true
+    - tool_name: "model_switch|set_model|config"
+      description: "Actually switch the model"
+      required: false  # Model switch might happen implicitly
+    - tool_name: "file_read|read_file|bash|memory_search"
+      description: "Must re-read or recall (not assume context survived switch)"
+      required: true
+  max_total_calls: 10
+
+weight_state: 0.3
+weight_trajectory: 0.4  # Trajectory matters most here — did it handle the switch correctly?
+weight_behavior: 0.3
+
+behavior_rubric: |
+  Score 1.0: After model switch, correctly identifies Phase 3 deadline as September 30. Uses tools to verify rather than assuming context survived.
+  Score 0.5: Gets the deadline right but doesn't verify via tools post-switch.
+  Score 0.0: Wrong deadline, or fails to switch, or loses context completely.
+
+pass_threshold: 0.6
+required_pass_rate: 0.6

@@ -1,0 +1,166 @@
+"""Job queue backed by HF Dataset for persistent state.
+
+Architecture:
+- Submissions stored as rows in HF Dataset (requests split)
+- Status: PENDING → EVALUATING → FINISHED | FAILED
+- Results stored in a separate split (results)
+- Queue worker polls for PENDING jobs and evaluates them
+
+This runs inside the HF Space container — no external infra needed.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import datetime
+import json
+import logging
+import os
+import time
+from enum import Enum
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+# HF Dataset repo for queue state and results
+QUEUE_DATASET = os.environ.get("CLAWBENCH_QUEUE_DATASET", "openclaw/clawbench-results")
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
+
+# Local fallback when HF is unavailable
+LOCAL_QUEUE_DIR = Path("/data/queue") if Path("/data").exists() else Path("data/queue")
+
+
+class JobStatus(str, Enum):
+    PENDING = "pending"
+    EVALUATING = "evaluating"
+    FINISHED = "finished"
+    FAILED = "failed"
+
+
+class SubmissionRequest(BaseModel):
+    model: str  # e.g. "anthropic/claude-sonnet-4-6"
+    provider: str = ""  # e.g. "anthropic"
+    api_key_env: str = ""  # Env var name holding the API key (NOT the key itself)
+    runs_per_task: int = 5
+    category: str | None = None  # Filter to specific category
+    submitter: str = ""  # HF username
+    notes: str = ""
+
+
+class Job(BaseModel):
+    job_id: str
+    status: JobStatus = JobStatus.PENDING
+    request: SubmissionRequest
+    submitted_at: str = ""
+    started_at: str | None = None
+    finished_at: str | None = None
+    error: str | None = None
+    result_id: str | None = None  # Links to BenchmarkResult.submission_id
+
+
+class JobQueue:
+    """Manages the evaluation queue with HF Dataset persistence."""
+
+    def __init__(self) -> None:
+        self._jobs: dict[str, Job] = {}
+        self._lock = asyncio.Lock()
+        LOCAL_QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+        self._load_local()
+
+    def _load_local(self) -> None:
+        """Load queue state from local disk."""
+        jobs_file = LOCAL_QUEUE_DIR / "jobs.json"
+        if jobs_file.exists():
+            try:
+                data = json.loads(jobs_file.read_text())
+                for item in data:
+                    job = Job(**item)
+                    self._jobs[job.job_id] = job
+                logger.info("Loaded %d jobs from local queue", len(self._jobs))
+            except Exception as e:
+                logger.error("Failed to load local queue: %s", e)
+
+    def _save_local(self) -> None:
+        """Persist queue state to local disk."""
+        jobs_file = LOCAL_QUEUE_DIR / "jobs.json"
+        data = [job.model_dump() for job in self._jobs.values()]
+        jobs_file.write_text(json.dumps(data, indent=2))
+
+    async def submit(self, request: SubmissionRequest) -> Job:
+        """Submit a new evaluation job."""
+        import uuid
+        async with self._lock:
+            job = Job(
+                job_id=str(uuid.uuid4())[:8],
+                request=request,
+                submitted_at=_now_iso(),
+            )
+            self._jobs[job.job_id] = job
+            self._save_local()
+            await self._sync_to_hub()
+            logger.info("Job %s submitted for model %s", job.job_id, request.model)
+            return job
+
+    async def get_status(self, job_id: str) -> Job | None:
+        return self._jobs.get(job_id)
+
+    async def list_jobs(self, limit: int = 50) -> list[Job]:
+        jobs = sorted(self._jobs.values(), key=lambda j: j.submitted_at, reverse=True)
+        return jobs[:limit]
+
+    async def list_pending(self) -> list[Job]:
+        return [j for j in self._jobs.values() if j.status == JobStatus.PENDING]
+
+    async def mark_evaluating(self, job_id: str) -> None:
+        async with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.status = JobStatus.EVALUATING
+                job.started_at = _now_iso()
+                self._save_local()
+
+    async def mark_finished(self, job_id: str, result_id: str) -> None:
+        async with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.status = JobStatus.FINISHED
+                job.finished_at = _now_iso()
+                job.result_id = result_id
+                self._save_local()
+                await self._sync_to_hub()
+
+    async def mark_failed(self, job_id: str, error: str) -> None:
+        async with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.status = JobStatus.FAILED
+                job.finished_at = _now_iso()
+                job.error = error
+                self._save_local()
+                await self._sync_to_hub()
+
+    async def _sync_to_hub(self) -> None:
+        """Push queue state to HF Dataset for persistence across restarts."""
+        if not HF_TOKEN:
+            return
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi(token=HF_TOKEN)
+
+            # Upload jobs.json to the dataset repo
+            local_path = LOCAL_QUEUE_DIR / "jobs.json"
+            api.upload_file(
+                path_or_fileobj=str(local_path),
+                path_in_repo="queue/jobs.json",
+                repo_id=QUEUE_DATASET,
+                repo_type="dataset",
+            )
+        except Exception as e:
+            logger.warning("Failed to sync queue to Hub: %s", e)
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()

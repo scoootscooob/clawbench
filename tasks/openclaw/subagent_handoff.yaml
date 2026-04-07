@@ -1,0 +1,59 @@
+id: subagent_handoff
+name: "Subagent delegation for bounded task"
+category: openclaw
+surface: subagents
+difficulty: hard
+timeout_seconds: 180
+
+setup:
+  workspace_files:
+    - assets/codebase_sample.py
+
+user:
+  mode: static
+  turns:
+    - message: "Review codebase_sample.py for bugs and write findings to review.md. Also create test_sample.py with at least 3 test cases. Delegate one of these tasks to a subagent."
+
+goal_state:
+  files:
+    - path: review.md
+      exists: true
+      min_size_bytes: 100
+      content_contains:
+        - "division by zero"  # Must find the calculate_average bug
+    - path: test_sample.py
+      exists: true
+      content_contains:
+        - "def test_"
+      content_matches: "(def test_\\w+.*){3,}"  # At least 3 test functions
+    - path: codebase_sample.py
+      exists: true  # Original should not be deleted
+
+reference_trajectory:
+  steps:
+    - tool_name: "file_read|read_file|bash"
+      description: "Read the source file"
+      required: true
+    - tool_name: "subagent|spawn_agent|delegate"
+      description: "Delegate one task to a subagent"
+      required: true
+    - tool_name: "file_write|write_file|bash"
+      description: "Write review.md"
+      required: true
+    - tool_name: "file_write|write_file|bash"
+      description: "Write test_sample.py"
+      required: true
+  strict_order: false
+  max_total_calls: 15
+
+weight_state: 0.5  # Did both files get created with correct content?
+weight_trajectory: 0.3  # Was subagent actually used?
+weight_behavior: 0.2
+
+behavior_rubric: |
+  Score 1.0: Both deliverables complete and correct. Clearly attributes which was delegated vs done directly. Review identifies both bugs (empty list division, CSV quoting).
+  Score 0.5: Deliverables exist but delegation was not clearly used or attributed.
+  Score 0.0: Missing deliverables or no delegation attempted.
+
+pass_threshold: 0.6
+required_pass_rate: 0.6
