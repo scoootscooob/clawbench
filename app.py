@@ -29,6 +29,27 @@ RESULTS_DIR = Path("/data/results") if Path("/data").exists() else Path("data/re
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
+# Preset models for quick submission
+# ---------------------------------------------------------------------------
+
+PRESET_MODELS = {
+    # Chinese open-source (latest as of April 2026)
+    "Qwen 3.5 27B": "huggingface/Qwen/Qwen3.5-27B",
+    "DeepSeek R1 0528": "huggingface/deepseek-ai/DeepSeek-R1-0528",
+    "Kimi K2.5": "huggingface/moonshotai/Kimi-K2.5",
+    "MiniMax M2.5": "huggingface/MiniMaxAI/MiniMax-M2.5",
+    "GLM-4 32B": "huggingface/THUDM/GLM-4-32B-0414",
+    "GLM-Z1 32B (reasoning)": "huggingface/THUDM/GLM-Z1-32B-0414",
+    # Google open-source
+    "Gemma 4 31B": "huggingface/google/gemma-4-31B-it",
+    "Gemma 4 26B MoE": "huggingface/google/gemma-4-26B-A4B-it",
+    # Anthropic (proprietary, uses ANTHROPIC_API_KEY)
+    "Claude Sonnet 4.6": "anthropic/claude-sonnet-4-6",
+    "Claude Opus 4.6": "anthropic/claude-opus-4-6",
+    "Claude Haiku 4.5": "anthropic/claude-haiku-4-5",
+}
+
+# ---------------------------------------------------------------------------
 # Background worker (starts in a thread)
 # ---------------------------------------------------------------------------
 
@@ -140,20 +161,37 @@ def load_queue() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def submit_model(model: str, provider: str, runs: int, category: str | None, submitter: str) -> str:
-    if not model.strip():
-        return "Please enter a model ID."
+def submit_model(model: str, preset: str, provider: str, runs: int, category: str | None, submitter: str) -> str:
+    # Use preset if selected, otherwise use custom model ID
+    model_id = PRESET_MODELS.get(preset, "") or model.strip()
+    if not model_id:
+        return "Please enter a model ID or select a preset."
 
     cat = category if category != "all" else None
     request = SubmissionRequest(
-        model=model.strip(),
+        model=model_id,
         provider=provider.strip(),
         runs_per_task=int(runs),
         category=cat,
         submitter=submitter.strip(),
     )
     job = asyncio.run(queue.submit(request))
-    return f"Submitted! Job ID: {job.job_id}. Check the Queue tab for status."
+    return f"Submitted [{model_id}]! Job ID: {job.job_id}. Check the Queue tab."
+
+
+def submit_all_presets(runs: int, submitter: str) -> str:
+    """Submit all preset models at once."""
+    submitted = []
+    for name, model_id in PRESET_MODELS.items():
+        request = SubmissionRequest(
+            model=model_id,
+            provider="",
+            runs_per_task=int(runs),
+            submitter=submitter.strip(),
+        )
+        job = asyncio.run(queue.submit(request))
+        submitted.append(f"{name} ({job.job_id})")
+    return f"Submitted {len(submitted)} models:\n" + "\n".join(f"  - {s}" for s in submitted)
 
 
 # ---------------------------------------------------------------------------
@@ -185,23 +223,29 @@ with gr.Blocks(title="ClawBench", theme=gr.themes.Base()) as demo:
     with gr.Tab("Submit"):
         gr.Markdown("### Submit a model for evaluation")
         gr.Markdown(
-            "The model will be evaluated against the OpenClaw gateway running "
-            "inside this Space. Results appear on the leaderboard when complete."
+            "Select a preset or enter a custom model ID. Open-source models "
+            "run via HuggingFace Inference API. Proprietary models need API keys set as Space secrets."
+        )
+
+        preset_input = gr.Dropdown(
+            choices=["(custom)"] + list(PRESET_MODELS.keys()),
+            value="(custom)",
+            label="Preset models",
         )
         with gr.Row():
             model_input = gr.Textbox(
-                label="Model ID",
-                placeholder="e.g. anthropic/claude-sonnet-4-6",
+                label="Custom Model ID (if not using preset)",
+                placeholder="e.g. huggingface/org/model-name",
                 scale=3,
             )
             provider_input = gr.Textbox(
                 label="Provider",
-                placeholder="e.g. anthropic",
+                placeholder="auto-detected from model ID",
                 scale=1,
             )
         with gr.Row():
             runs_input = gr.Slider(
-                minimum=1, maximum=10, value=5, step=1,
+                minimum=1, maximum=10, value=3, step=1,
                 label="Runs per task (higher = more reliable pass^k)",
             )
             category_input = gr.Dropdown(
@@ -213,13 +257,38 @@ with gr.Blocks(title="ClawBench", theme=gr.themes.Base()) as demo:
             label="Your name (optional)",
             placeholder="HF username",
         )
-        submit_btn = gr.Button("Submit for Evaluation", variant="primary")
-        submit_output = gr.Textbox(label="Status", interactive=False)
+        with gr.Row():
+            submit_btn = gr.Button("Submit Model", variant="primary")
+            submit_all_btn = gr.Button("Submit All Presets", variant="secondary")
+        submit_output = gr.Textbox(label="Status", interactive=False, lines=5)
         submit_btn.click(
             fn=submit_model,
-            inputs=[model_input, provider_input, runs_input, category_input, submitter_input],
+            inputs=[model_input, preset_input, provider_input, runs_input, category_input, submitter_input],
             outputs=submit_output,
         )
+        submit_all_btn.click(
+            fn=submit_all_presets,
+            inputs=[runs_input, submitter_input],
+            outputs=submit_output,
+        )
+
+        gr.Markdown("""
+**Preset models included:**
+
+| Model | Source | Type |
+|-------|--------|------|
+| Qwen 3.5 27B | Alibaba | Open-source (HF) |
+| DeepSeek R1 0528 | DeepSeek | Open-source (HF) |
+| Kimi K2.5 | Moonshot AI | Open-source (HF) |
+| MiniMax M2.5 | MiniMax | Open-source (HF) |
+| GLM-4 32B | Tsinghua/Zhipu | Open-source (HF) |
+| GLM-Z1 32B | Tsinghua/Zhipu | Open-source (HF, reasoning) |
+| Gemma 4 31B | Google | Open-source (HF) |
+| Gemma 4 26B MoE | Google | Open-source (HF) |
+| Claude Sonnet 4.6 | Anthropic | Proprietary (API key) |
+| Claude Opus 4.6 | Anthropic | Proprietary (API key) |
+| Claude Haiku 4.5 | Anthropic | Proprietary (API key) |
+""")
 
     with gr.Tab("Queue"):
         gr.Markdown("### Evaluation Queue")

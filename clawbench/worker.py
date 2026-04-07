@@ -120,13 +120,26 @@ class EvalWorker:
         if not gateway_cmd:
             raise RuntimeError("OpenClaw gateway binary not found")
 
+        gateway_token = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "clawbench-internal-token")
         self._gateway_process = subprocess.Popen(
             [*gateway_cmd, "gateway", "run",
+             "--allow-unconfigured",
              "--bind", "loopback",
              "--port", str(GATEWAY_PORT),
+             "--auth", "token",
+             "--token", gateway_token,
              "--force"],
             stdout=open("/tmp/gateway.log", "a"),
             stderr=subprocess.STDOUT,
+            env={
+                **os.environ,
+                "OPENCLAW_HOME": os.environ.get("OPENCLAW_HOME", os.path.expanduser("~")),
+                "OPENCLAW_STATE_DIR": os.environ.get("OPENCLAW_STATE_DIR", os.path.expanduser("~/.openclaw")),
+                "OPENCLAW_SKIP_BROWSER_CONTROL_SERVER": "1",
+                "OPENCLAW_SKIP_GMAIL_WATCHER": "1",
+                "OPENCLAW_SKIP_CANVAS_HOST": "1",
+                "OPENCLAW_NO_RESPAWN": "1",
+            },
         )
 
         # Wait for health

@@ -22,9 +22,10 @@ PROTOCOL_VERSION = 3
 @dataclass
 class GatewayConfig:
     url: str = "ws://127.0.0.1:18789"
-    token: str = ""
-    client_id: str = "clawbench"
+    token: str = "clawbench-internal-token"
+    client_id: str = "cli"  # Must be a valid GATEWAY_CLIENT_IDS value
     client_version: str = "0.1.0"
+    client_mode: str = "cli"  # Must be a valid GATEWAY_CLIENT_MODES value
     platform: str = "linux"
     connect_timeout: float = 15.0
     request_timeout: float = 300.0
@@ -95,10 +96,10 @@ class GatewayClient:
                 "id": self.config.client_id,
                 "version": self.config.client_version,
                 "platform": self.config.platform,
-                "mode": "operator",
+                "mode": self.config.client_mode,
             },
             "role": "operator",
-            "scopes": ["operator.read", "operator.write"],
+            "scopes": ["operator.admin", "operator.read", "operator.write", "operator.approvals", "operator.pairing"],
             "caps": [],
             "commands": [],
             "permissions": {},
