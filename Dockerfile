@@ -1,4 +1,18 @@
 # ClawBench HF Docker Space
+# Two-stage: build OpenClaw from source, then Python harness
+
+# --- Stage 1: Build OpenClaw from source ---
+FROM node:22-bookworm-slim AS gateway-build
+
+RUN apt-get update && apt-get install -y git python3 make g++ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+# Clone latest main and install + build with all extensions
+RUN git clone --depth 1 https://github.com/openclaw/openclaw.git . && \
+    npm install && \
+    npm run build
+
+# --- Stage 2: Runtime ---
 FROM python:3.11-slim-bookworm
 
 # Install Node.js 22
@@ -8,14 +22,12 @@ RUN apt-get update && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# Install OpenClaw gateway from npm + missing extension deps
-RUN npm install -g openclaw@2026.4.5 && \
-    cd /usr/lib/node_modules/openclaw && \
-    npm install @buape/carbon@0.14.0 2>/dev/null || true
+# Copy built OpenClaw from stage 1 (includes all extensions + node_modules)
+COPY --from=gateway-build /build /openclaw
 
 # HF Space user (UID 1000 required)
 RUN useradd -m -u 1000 user
-ENV HOME=/home/user PATH=/home/user/.local/bin:/usr/lib/node_modules/.bin:$PATH
+ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
 
 WORKDIR /home/user/app
 

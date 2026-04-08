@@ -185,17 +185,18 @@ class EvalWorker:
     def _find_gateway_cmd(self) -> list[str] | None:
         """Find the openclaw binary."""
         import shutil
-        # npm global install (primary path in Docker)
-        if shutil.which("openclaw"):
-            return ["openclaw"]
-        # Try known node locations
+        # Source build (primary path in Docker — /openclaw from stage 1)
         for path in [
-            "/usr/lib/node_modules/openclaw/dist/cli.js",
             "/openclaw/dist/cli.js",
+            "/openclaw/dist/index.js",
             "/home/user/openclaw/dist/cli.js",
+            "/usr/lib/node_modules/openclaw/dist/cli.js",
         ]:
             if Path(path).exists():
                 return ["node", path]
+        # npm global install fallback
+        if shutil.which("openclaw"):
+            return ["openclaw"]
         return None
 
     def _stop_gateway(self) -> None:
