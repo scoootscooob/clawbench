@@ -8,8 +8,10 @@ RUN apt-get update && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# Install OpenClaw gateway from npm
-RUN npm install -g openclaw@latest
+# Install OpenClaw gateway from npm + missing extension deps
+RUN npm install -g openclaw@latest && \
+    cd /usr/lib/node_modules/openclaw && \
+    npm install @buape/carbon@0.14.0 2>/dev/null || true
 
 # HF Space user (UID 1000 required)
 RUN useradd -m -u 1000 user
