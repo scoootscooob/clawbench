@@ -135,8 +135,7 @@ class EvalWorker:
              "--bind", "loopback",
              "--port", str(GATEWAY_PORT),
              "--auth", "token",
-             "--token", gateway_token,
-             "--force"],
+             "--token", gateway_token],
             stdout=open("/tmp/gateway.log", "a"),
             stderr=subprocess.STDOUT,
             env={
