@@ -9,7 +9,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install OpenClaw gateway from npm + missing extension deps
-RUN npm install -g openclaw@2026.4.8 && \
+RUN npm install -g openclaw@2026.4.5 && \
     cd /usr/lib/node_modules/openclaw && \
     npm install @buape/carbon@0.14.0 2>/dev/null || true
 
