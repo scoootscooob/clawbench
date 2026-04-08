@@ -28,7 +28,6 @@ def cli(verbose: bool) -> None:
 
 @cli.command()
 @click.option("--model", "-m", required=True, help="Model to benchmark")
-@click.option("--gateway-url", default="ws://127.0.0.1:18789", help="Gateway WebSocket URL")
 @click.option("--gateway-token", envvar="OPENCLAW_GATEWAY_TOKEN", default="", help="Gateway auth token")
 @click.option("--runs", "-n", default=5, help="Runs per task (pass^k uses all runs)")
 @click.option("--category", "-c", type=click.Choice(["general", "openclaw", "adversarial"]), help="Filter category")
@@ -40,7 +39,6 @@ def cli(verbose: bool) -> None:
 @click.option("--upload", is_flag=True, help="Upload results to HF Dataset")
 def run(
     model: str,
-    gateway_url: str,
     gateway_token: str,
     runs: int,
     category: str | None,
@@ -52,7 +50,7 @@ def run(
     upload: bool,
 ) -> None:
     """Run the benchmark against a model."""
-    gateway_config = GatewayConfig(url=gateway_url, token=gateway_token)
+    gateway_config = GatewayConfig(token=gateway_token)
     judge_config = JudgeConfig(model=judge_model, api_key=judge_api_key) if judge_api_key else None
 
     harness = BenchmarkHarness(

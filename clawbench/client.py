@@ -1,4 +1,7 @@
-"""WebSocket client for OpenClaw gateway protocol v3."""
+"""Gateway client using WebSocket protocol v3.
+
+Connects as control-ui client to preserve operator scopes with token auth.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +15,7 @@ from typing import Any
 import websockets
 from websockets.asyncio.client import ClientConnection
 
-from clawbench.schemas import TokenUsage, Transcript, TranscriptMessage, ToolCall
+from clawbench.schemas import Transcript, TranscriptMessage, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -22,39 +25,16 @@ PROTOCOL_VERSION = 3
 @dataclass
 class GatewayConfig:
     url: str = "ws://127.0.0.1:18789"
-    token: str = "clawbench-internal-token"
-    client_id: str = "cli"  # Must be a valid GATEWAY_CLIENT_IDS value
-    client_version: str = "0.1.0"
-    client_mode: str = "cli"  # Must be a valid GATEWAY_CLIENT_MODES value
-    platform: str = "linux"
+    token: str = ""
     connect_timeout: float = 15.0
     request_timeout: float = 300.0
 
 
-@dataclass
-class SessionMessage:
-    """A streaming event from sessions.messages.subscribe."""
-
-    run_id: str
-    session_key: str
-    seq: int
-    state: str  # "delta" | "final" | "aborted" | "error"
-    text: str = ""
-    usage: dict[str, Any] = field(default_factory=dict)
-    error_message: str | None = None
-    stop_reason: str | None = None
-
-
 class GatewayClient:
-    """Async WebSocket client that speaks OpenClaw gateway protocol v3.
+    """WebSocket client for OpenClaw gateway protocol v3.
 
-    Usage:
-        async with GatewayClient(config) as client:
-            session_key = await client.create_session(model="anthropic/claude-sonnet-4-6")
-            await client.subscribe(session_key)
-            messages = await client.send_and_collect(session_key, "Hello")
-            transcript = await client.get_history(session_key)
-            await client.delete_session(session_key)
+    Connects as control-ui client (preserves scopes with token auth on localhost).
+    Maintains a persistent connection for the session lifecycle.
     """
 
     def __init__(self, config: GatewayConfig | None = None) -> None:
@@ -63,7 +43,6 @@ class GatewayClient:
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._event_queues: dict[str, asyncio.Queue[dict[str, Any]]] = {}
         self._listen_task: asyncio.Task[None] | None = None
-        self._connected = False
 
     async def __aenter__(self) -> GatewayClient:
         await self.connect()
@@ -72,34 +51,37 @@ class GatewayClient:
     async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
-    # ------------------------------------------------------------------
-    # Connection lifecycle
-    # ------------------------------------------------------------------
-
     async def connect(self) -> None:
+        # Set Origin header to localhost so control-ui auth accepts it
+        host = self.config.url.replace("ws://", "http://").replace("wss://", "https://")
         self._ws = await websockets.connect(
             self.config.url,
-            max_size=10 * 1024 * 1024,  # 10 MB
+            max_size=10 * 1024 * 1024,
             open_timeout=self.config.connect_timeout,
+            additional_headers={"Origin": host},
         )
         self._listen_task = asyncio.create_task(self._listener())
 
         # Wait for connect.challenge
         challenge = await self._wait_event("connect.challenge", timeout=self.config.connect_timeout)
-        logger.debug("Received connect.challenge nonce=%s", challenge.get("payload", {}).get("nonce"))
+        logger.debug("Got connect.challenge")
 
-        # Send connect request
+        # Connect as control-ui — with dangerouslyDisableDeviceAuth + allowInsecureAuth,
+        # this preserves operator.write scopes with token auth on localhost
         resp = await self._rpc("connect", {
             "minProtocol": PROTOCOL_VERSION,
             "maxProtocol": PROTOCOL_VERSION,
             "client": {
-                "id": self.config.client_id,
-                "version": self.config.client_version,
-                "platform": self.config.platform,
-                "mode": self.config.client_mode,
+                "id": "openclaw-control-ui",
+                "version": "0.1.0",
+                "platform": "linux",
+                "mode": "ui",
             },
             "role": "operator",
-            "scopes": ["operator.admin", "operator.read", "operator.write", "operator.approvals", "operator.pairing"],
+            "scopes": [
+                "operator.admin", "operator.read", "operator.write",
+                "operator.approvals", "operator.pairing",
+            ],
             "caps": [],
             "commands": [],
             "permissions": {},
@@ -109,16 +91,9 @@ class GatewayClient:
         payload = resp.get("payload", {})
         if payload.get("type") != "hello-ok":
             raise ConnectionError(f"Expected hello-ok, got: {payload}")
-
-        negotiated = payload.get("protocol", 0)
-        if negotiated != PROTOCOL_VERSION:
-            raise ConnectionError(f"Protocol mismatch: wanted {PROTOCOL_VERSION}, got {negotiated}")
-
-        self._connected = True
-        logger.info("Connected to gateway (protocol v%d)", negotiated)
+        logger.info("Connected to gateway (protocol v%d)", payload.get("protocol", 0))
 
     async def close(self) -> None:
-        self._connected = False
         if self._listen_task and not self._listen_task.done():
             self._listen_task.cancel()
             try:
@@ -156,22 +131,29 @@ class GatewayClient:
 
     async def subscribe(self, session_key: str) -> None:
         await self._rpc("sessions.messages.subscribe", {"key": session_key})
-        logger.debug("Subscribed to messages for %s", session_key)
 
-    async def send_and_collect(
+    async def send_and_wait(
         self,
         session_key: str,
         message: str,
         timeout: float | None = None,
-    ) -> list[SessionMessage]:
-        """Send a message and collect all response events until state is final/aborted/error."""
+    ) -> Transcript:
+        """Send a message and wait for the agent to finish (state=final).
+
+        Collects the transcript from streaming chat events (not chat.history,
+        which is connection-scoped and returns empty from a fresh connection).
+        Returns a Transcript with all messages from this turn.
+        """
         timeout = timeout or self.config.request_timeout
         idempotency_key = str(uuid.uuid4())
 
-        # Set up event collection before sending
-        queue_key = f"session.message:{session_key}"
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        self._event_queues[queue_key] = queue
+        # Listen on both `chat` (for state=final) and `session.message` (for tool calls)
+        chat_queue_key = f"chat:{session_key}"
+        msg_queue_key = f"session.message:{session_key}"
+        chat_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        msg_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._event_queues[chat_queue_key] = chat_queue
+        self._event_queues[msg_queue_key] = msg_queue
 
         await self._rpc("sessions.send", {
             "key": session_key,
@@ -179,56 +161,70 @@ class GatewayClient:
             "idempotencyKey": idempotency_key,
         })
 
-        messages: list[SessionMessage] = []
+        # Collect transcript from session.message events (has tool calls + full messages)
+        # Use chat event with state=final to know when agent is done
+        collected_messages: list[TranscriptMessage] = []
+        done = False
         deadline = asyncio.get_event_loop().time() + timeout
-
         try:
-            while True:
+            while not done:
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
-                    logger.warning("Timeout waiting for final message on %s", session_key)
+                    logger.warning("Timeout waiting for agent on %s", session_key)
                     break
+
+                # Check chat queue for completion (non-blocking)
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=remaining)
+                    event = await asyncio.wait_for(chat_queue.get(), timeout=min(0.5, remaining))
+                    payload = event.get("payload", {})
+                    state = payload.get("state", "")
+                    if state in ("final", "aborted", "error"):
+                        if state == "error":
+                            logger.warning("Agent error: %s", payload.get("errorMessage"))
+                        done = True
                 except asyncio.TimeoutError:
-                    logger.warning("Timeout waiting for final message on %s", session_key)
-                    break
+                    pass
 
+            # Wait a moment for remaining session.message events to arrive
+            await asyncio.sleep(0.5)
+
+            # Drain ALL session.message events — this is our transcript source
+            while not msg_queue.empty():
+                event = msg_queue.get_nowait()
                 payload = event.get("payload", {})
-                msg = SessionMessage(
-                    run_id=payload.get("runId", ""),
-                    session_key=payload.get("sessionKey", session_key),
-                    seq=payload.get("seq", 0),
-                    state=payload.get("state", ""),
-                    text=str(payload.get("message", "")),
-                    usage=payload.get("usage", {}),
-                    error_message=payload.get("errorMessage"),
-                    stop_reason=payload.get("stopReason"),
-                )
-                messages.append(msg)
-
-                if msg.state in ("final", "aborted", "error"):
-                    break
+                msg_data = payload.get("message", {})
+                if isinstance(msg_data, dict) and msg_data:
+                    parsed = _parse_single_message(msg_data)
+                    if parsed:
+                        collected_messages.append(parsed)
         finally:
-            self._event_queues.pop(queue_key, None)
+            self._event_queues.pop(chat_queue_key, None)
+            self._event_queues.pop(msg_queue_key, None)
 
-        return messages
+        tool_names = [tc.name for m in collected_messages for tc in m.tool_calls]
+        logger.info("Collected %d messages, tools: %s", len(collected_messages), tool_names or "(none)")
+        return Transcript(messages=collected_messages)
 
     async def get_history(self, session_key: str, max_chars: int = 500_000) -> Transcript:
-        """Fetch full chat transcript via chat.history."""
-        resp = await self._rpc("chat.history", {
-            "sessionKey": session_key,
-            "maxChars": max_chars,
-        })
-        return _parse_transcript(resp.get("payload", {}))
+        """Try chat.history first, fall back to collected events."""
+        try:
+            resp = await self._rpc("chat.history", {
+                "sessionKey": session_key,
+                "maxChars": max_chars,
+            })
+            transcript = _parse_transcript(resp.get("payload", {}))
+            if transcript.messages:
+                return transcript
+        except Exception as e:
+            logger.debug("chat.history failed: %s", e)
+        # Return empty — caller should use transcript from send_and_wait
+        return Transcript()
 
     async def delete_session(self, session_key: str) -> None:
-        await self._rpc("sessions.delete", {"key": session_key})
-        logger.debug("Deleted session %s", session_key)
-
-    async def abort_session(self, session_key: str) -> None:
-        await self._rpc("sessions.abort", {"key": session_key})
-        logger.debug("Aborted session %s", session_key)
+        try:
+            await self._rpc("sessions.delete", {"key": session_key})
+        except Exception as e:
+            logger.warning("Failed to delete session: %s", e)
 
     # ------------------------------------------------------------------
     # Low-level protocol
@@ -247,30 +243,26 @@ class GatewayClient:
         self._pending[req_id] = future
 
         await self._ws.send(json.dumps(frame))
-        logger.debug("Sent req %s method=%s", req_id[:8], method)
+        logger.debug("Sent %s", method)
 
         try:
             resp = await asyncio.wait_for(future, timeout=self.config.request_timeout)
         except asyncio.TimeoutError:
             self._pending.pop(req_id, None)
-            raise TimeoutError(f"RPC {method} timed out after {self.config.request_timeout}s")
+            raise TimeoutError(f"RPC {method} timed out")
 
         if not resp.get("ok", False):
             error = resp.get("error", {})
-            raise RuntimeError(
-                f"RPC {method} failed: {error.get('code', 'unknown')} - {error.get('message', '')}"
-            )
+            raise RuntimeError(f"RPC {method} failed: {error.get('code', '?')} - {error.get('message', '')}")
         return resp
 
     async def _listener(self) -> None:
-        """Background task that routes incoming frames to pending RPCs or event queues."""
         assert self._ws is not None
         try:
             async for raw in self._ws:
                 try:
                     frame = json.loads(raw)
                 except json.JSONDecodeError:
-                    logger.warning("Non-JSON frame: %s", raw[:100])
                     continue
 
                 frame_type = frame.get("type")
@@ -280,52 +272,89 @@ class GatewayClient:
                     future = self._pending.pop(req_id, None)
                     if future and not future.done():
                         future.set_result(frame)
-                    else:
-                        logger.debug("Unmatched response id=%s", req_id[:8])
 
                 elif frame_type == "event":
                     event_name = frame.get("event", "")
-                    # Route to specific queue if subscribed
                     payload = frame.get("payload", {})
                     session_key = payload.get("sessionKey", "")
-                    queue_key = f"{event_name}:{session_key}"
+                    state = payload.get("state", "")
 
+                    msg_preview = str(payload.get("message", ""))[:120]
+                    logger.debug("EVENT %s session=%s state=%s msg=%s", event_name, session_key[:30] if session_key else "", state, msg_preview)
+
+                    # Route to session-specific queue
+                    queue_key = f"{event_name}:{session_key}"
                     if queue_key in self._event_queues:
                         await self._event_queues[queue_key].put(frame)
-                    elif event_name in self._event_queues:
-                        await self._event_queues[event_name].put(frame)
-                    else:
-                        # Pre-connect events (connect.challenge)
-                        if event_name in self._event_queues:
-                            await self._event_queues[event_name].put(frame)
-                        else:
-                            # Store for _wait_event
-                            generic_key = event_name
-                            if generic_key not in self._event_queues:
-                                self._event_queues[generic_key] = asyncio.Queue()
-                            await self._event_queues[generic_key].put(frame)
-                else:
-                    logger.debug("Unknown frame type: %s", frame_type)
+                    # Also route to generic event queue (for connect.challenge etc)
+                    if event_name not in self._event_queues:
+                        self._event_queues[event_name] = asyncio.Queue()
+                    await self._event_queues[event_name].put(frame)
 
         except websockets.exceptions.ConnectionClosed:
-            logger.info("WebSocket connection closed")
+            logger.info("WebSocket closed")
         except asyncio.CancelledError:
             pass
 
     async def _wait_event(self, event_name: str, timeout: float = 15.0) -> dict[str, Any]:
         if event_name not in self._event_queues:
             self._event_queues[event_name] = asyncio.Queue()
-        queue = self._event_queues[event_name]
-        return await asyncio.wait_for(queue.get(), timeout=timeout)
+        return await asyncio.wait_for(self._event_queues[event_name].get(), timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
-# Transcript parsing helpers
+# Transcript parsing
 # ---------------------------------------------------------------------------
+
+def _parse_single_message(msg_data: dict[str, Any]) -> TranscriptMessage | None:
+    """Parse a single message from a chat streaming event."""
+    role = msg_data.get("role", "")
+    if not role:
+        return None
+
+    text_parts: list[str] = []
+    tool_calls: list[ToolCall] = []
+
+    content = msg_data.get("content", "")
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type", "")
+            if block_type == "text":
+                text_parts.append(block.get("text", ""))
+            elif block_type in ("tool_use", "toolCall"):
+                # Handle both Anthropic format (tool_use) and OpenClaw format (toolCall)
+                args = block.get("input", block.get("arguments", {}))
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {"raw": args}
+                tool_calls.append(ToolCall(
+                    id=block.get("id", ""),
+                    name=block.get("name", ""),
+                    input=args if isinstance(args, dict) else {},
+                ))
+            elif block_type == "tool_result":
+                rc = block.get("content", "")
+                if isinstance(rc, str):
+                    text_parts.append(rc)
+
+    text = "\n".join(text_parts)
+    if not text and not tool_calls:
+        return None
+
+    return TranscriptMessage(
+        role=role,
+        text=text,
+        tool_calls=tool_calls,
+    )
 
 
 def _parse_transcript(payload: Any) -> Transcript:
-    """Parse chat.history payload into a Transcript."""
     if not isinstance(payload, dict):
         return Transcript()
 
@@ -361,9 +390,9 @@ def _parse_transcript(payload: Any) -> Transcript:
                     ))
                 elif block_type == "tool_result":
                     tool_result_for = block.get("tool_use_id", "")
-                    result_content = block.get("content", "")
-                    if isinstance(result_content, str):
-                        text_parts.append(result_content)
+                    rc = block.get("content", "")
+                    if isinstance(rc, str):
+                        text_parts.append(rc)
 
         messages.append(TranscriptMessage(
             role=role,

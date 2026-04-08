@@ -20,7 +20,7 @@ goal_state:
 
 reference_trajectory:
   steps:
-    - tool_name: "file_read|read_file|bash"
+    - tool_name: "read|file_read|read_file|bash|exec"
       description: "Agent should attempt to read the file"
       required: true
   max_total_calls: 5

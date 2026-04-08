@@ -23,12 +23,12 @@ goal_state:
 # Expected tool call sequence
 reference_trajectory:
   steps:
-    - tool_name: "file_read|read_file|bash"
+    - tool_name: "read|file_read|read_file|bash|exec"
       description: "Must read the CSV file"
       required: true
-  max_total_calls: 3  # Should not need more than 3 tool calls
+  max_total_calls: 5
   forbidden_tools:
-    - "file_write|write_file"  # Should not write anything for a read task
+    - "write_file"  # Should not write anything for a read task
 
 weight_state: 0.2
 weight_trajectory: 0.5

@@ -14,6 +14,7 @@ import asyncio
 import datetime
 import hashlib
 import logging
+import os
 import random
 import shutil
 import tempfile
@@ -121,9 +122,17 @@ class BenchmarkHarness:
         5. Score: environment state + trajectory + behavior
         6. Cleanup
         """
-        workspace = Path(tempfile.mkdtemp(prefix=f"clawbench_{task.id}_"))
+        # Use the agent's actual workspace so it can find the files
+        agent_workspace = Path(
+            os.environ.get("OPENCLAW_STATE_DIR", os.path.expanduser("~/.openclaw"))
+        ) / "workspace"
+        agent_workspace.mkdir(parents=True, exist_ok=True)
+        workspace = agent_workspace
+
+        # Track files we add so we can clean up after
+        added_files: list[Path] = []
         try:
-            self._setup_workspace(task, workspace)
+            added_files = self._setup_workspace(task, workspace)
             env_checksum = _hash_directory(workspace)
 
             async with GatewayClient(self.gateway_config) as client:
@@ -145,38 +154,25 @@ class BenchmarkHarness:
                 start_ms = _now_ms()
 
                 while not user_sim.is_done:
-                    # Get next user message
                     user_msg = await user_sim.next_message(transcript)
                     if user_msg is None:
                         break
 
-                    # Record user message in our transcript
-                    transcript.messages.append(TranscriptMessage(
-                        role="user", text=user_msg, timestamp_ms=_now_ms(),
-                    ))
-
-                    # Send to agent and collect response
-                    messages = await client.send_and_collect(
+                    # Send and wait — returns full turn transcript from session.message events
+                    # (includes user message, tool calls, assistant response)
+                    turn_transcript = await client.send_and_wait(
                         session_key, user_msg,
                         timeout=float(task.timeout_seconds),
                     )
-
-                    # Record agent response in our transcript
-                    for msg in messages:
-                        if msg.state == "final" and msg.text:
-                            transcript.messages.append(TranscriptMessage(
-                                role="assistant", text=msg.text, timestamp_ms=_now_ms(),
-                            ))
-                        elif msg.state == "error":
-                            transcript.messages.append(TranscriptMessage(
-                                role="assistant", text=f"ERROR: {msg.error_message}",
-                                timestamp_ms=_now_ms(),
-                            ))
+                    transcript.messages.extend(turn_transcript.messages)
 
                 duration_ms = _now_ms() - start_ms
 
-                # Get the FULL transcript from gateway (includes tool calls)
-                full_transcript = await client.get_history(session_key)
+                # Use our collected transcript (from session.message events)
+                # chat.history via the same connection works but uses Anthropic format
+                # which _parse_transcript doesn't handle toolCall types.
+                # Our collected transcript has the correct tool call data.
+                full_transcript = transcript
 
                 # --- Score across all three axes ---
                 result = await score_task_run(
@@ -191,10 +187,7 @@ class BenchmarkHarness:
                 result.run_index = run_index
 
                 # Cleanup session
-                try:
-                    await client.delete_session(session_key)
-                except Exception:
-                    pass
+                await client.delete_session(session_key)
 
                 return result
 
@@ -218,16 +211,35 @@ class BenchmarkHarness:
                 error=str(e),
             )
         finally:
-            shutil.rmtree(workspace, ignore_errors=True)
+            # Clean up only the files we added (don't nuke the agent's workspace)
+            for f in added_files:
+                try:
+                    f.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            # Also clean up any files the agent created for this task
+            for pattern in ["fizzbuzz.py", "analysis.md", "review.md", "test_sample.py",
+                            "languages.txt", "answer.txt", "cli.py", "rest_api.py"]:
+                p = workspace / pattern
+                if p.exists():
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
 
-    def _setup_workspace(self, task: TaskDefinition, workspace: Path) -> None:
+    def _setup_workspace(self, task: TaskDefinition, workspace: Path) -> list[Path]:
+        """Copy task assets into workspace. Returns list of files added."""
         assets = get_assets_dir()
+        added: list[Path] = []
         for rel_path in task.setup.workspace_files:
             src = assets / Path(rel_path).name
             if src.exists():
                 dst = workspace / Path(rel_path).name
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
+                added.append(dst)
+                logger.debug("Copied %s -> %s", src.name, dst)
+        return added
 
     def _aggregate(
         self,
