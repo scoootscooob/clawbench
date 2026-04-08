@@ -121,9 +121,17 @@ class EvalWorker:
             raise RuntimeError("OpenClaw gateway binary not found")
 
         gateway_token = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "clawbench-internal-token")
+
+        # Clear old log
+        try:
+            open("/tmp/gateway.log", "w").close()
+        except Exception:
+            pass
+
         self._gateway_process = subprocess.Popen(
             [*gateway_cmd, "gateway", "run",
              "--allow-unconfigured",
+             "--dev",
              "--bind", "loopback",
              "--port", str(GATEWAY_PORT),
              "--auth", "token",
@@ -144,7 +152,14 @@ class EvalWorker:
 
         # Wait for health
         import httpx
-        for i in range(30):
+        for i in range(60):
+            # Check if process died
+            if self._gateway_process.poll() is not None:
+                exit_code = self._gateway_process.returncode
+                log_tail = self._read_gateway_log()
+                raise RuntimeError(
+                    f"Gateway process exited with code {exit_code}. Log:\n{log_tail}"
+                )
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(f"http://127.0.0.1:{GATEWAY_PORT}/health")
@@ -155,7 +170,17 @@ class EvalWorker:
                 pass
             await asyncio.sleep(1)
 
-        raise RuntimeError("Gateway failed to start within 30s")
+        log_tail = self._read_gateway_log()
+        raise RuntimeError(f"Gateway failed to start within 60s. Log:\n{log_tail}")
+
+    def _read_gateway_log(self) -> str:
+        """Read last 50 lines of gateway log for debugging."""
+        try:
+            with open("/tmp/gateway.log") as f:
+                lines = f.readlines()
+            return "".join(lines[-50:])
+        except Exception:
+            return "(no gateway log)"
 
     def _find_gateway_cmd(self) -> list[str] | None:
         """Find the openclaw binary."""
