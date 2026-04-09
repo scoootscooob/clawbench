@@ -4,11 +4,17 @@
 # --- Stage 1: Build OpenClaw from source (skip canvas UI assets) ---
 FROM node:22-bookworm-slim AS gateway-build
 
+ARG OPENCLAW_REPO=https://github.com/scoootscooob/openclaw.git
+ARG OPENCLAW_REF=5682ec37fada89205821ee16a03f1e0d0948efb7
+
 RUN apt-get update && apt-get install -y git python3 make g++ && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
 WORKDIR /build
-RUN git clone --depth 1 https://github.com/openclaw/openclaw.git .
+RUN git init . && \
+    git remote add origin ${OPENCLAW_REPO} && \
+    git fetch --depth 1 origin ${OPENCLAW_REF} && \
+    git checkout FETCH_HEAD
 RUN pnpm install
 
 # Create a stub canvas bundle so tsdown doesn't fail on missing import
@@ -22,12 +28,10 @@ RUN pnpm exec tsdown --logLevel warn && \
     node scripts/build-stamp.mjs
 
 # --- Stage 2: Runtime ---
-FROM python:3.11-slim-bookworm
+FROM node:22-bookworm-slim
 
 RUN apt-get update && \
-    apt-get install -y curl lsof git && \
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y nodejs && \
+    apt-get install -y python3 python3-pip python-is-python3 curl lsof git && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=gateway-build /build/dist /openclaw/dist
@@ -50,9 +54,10 @@ WORKDIR /home/user/app
 COPY --chown=user pyproject.toml README.md ./
 COPY --chown=user clawbench/ clawbench/
 COPY --chown=user tasks/ tasks/
+COPY --chown=user baselines/ baselines/
 COPY --chown=user app.py .
 
-RUN pip install --no-cache-dir '.[dev]'
+RUN python3 -m pip install --break-system-packages --no-cache-dir '.[dev]'
 
 RUN mkdir -p \
     /data/results \
