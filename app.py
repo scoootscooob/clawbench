@@ -168,10 +168,30 @@ def load_queue() -> pd.DataFrame:
     jobs = asyncio.run(queue.list_jobs(limit=20))
     if not jobs:
         return pd.DataFrame(
-            columns=["ID", "Model", "Judge", "Prompt", "Scenario", "Status", "Submitted", "Runs", "Lanes"]
+            columns=[
+                "ID",
+                "Model",
+                "Judge",
+                "Prompt",
+                "Scenario",
+                "Status",
+                "Submitted",
+                "Started",
+                "Heartbeat",
+                "Task",
+                "Run",
+                "Runs",
+                "Lanes",
+                "Attempts",
+                "Requeues",
+                "Progress",
+            ]
         )
     rows = []
     for j in jobs:
+        run_label = ""
+        if j.current_run_index is not None and j.current_run_total is not None:
+            run_label = f"{j.current_run_index}/{j.current_run_total}"
         rows.append({
             "ID": j.job_id,
             "Model": j.request.model,
@@ -180,8 +200,15 @@ def load_queue() -> pd.DataFrame:
             "Scenario": j.request.scenario or "all",
             "Status": j.status.value,
             "Submitted": j.submitted_at[:16] if j.submitted_at else "",
+            "Started": j.started_at[:16] if j.started_at else "",
+            "Heartbeat": j.last_progress_at[:16] if j.last_progress_at else "",
+            "Task": j.current_task_id or "-",
+            "Run": run_label or "-",
             "Runs": j.request.runs_per_task,
             "Lanes": j.request.max_parallel_lanes,
+            "Attempts": j.attempt_count,
+            "Requeues": j.stale_requeues,
+            "Progress": j.progress_message or "-",
         })
     return pd.DataFrame(rows)
 
@@ -405,6 +432,10 @@ with gr.Blocks(title="ClawBench", theme=gr.themes.Base()) as demo:
 
     with gr.Tab("Queue"):
         gr.Markdown("### Evaluation Queue")
+        gr.Markdown(
+            "Heartbeat and progress fields update during long evaluations. "
+            "If a job loses its lease after a restart, the worker will auto-requeue it."
+        )
         queue_refresh = gr.Button("Refresh", scale=0)
         queue_table = gr.Dataframe(value=load_queue, interactive=False, wrap=True)
         queue_refresh.click(fn=load_queue, outputs=queue_table)

@@ -59,6 +59,7 @@ class BenchmarkHarness:
         randomize_order: bool = True,
         tasks_dir: Path | None = None,
         prepare_run: Callable[[TaskDefinition, int], Awaitable[None]] | None = None,
+        progress_callback: Callable[[TaskDefinition, int], Awaitable[None]] | None = None,
         print_report: bool = True,
         quiet: bool = False,
     ) -> None:
@@ -79,6 +80,7 @@ class BenchmarkHarness:
         self.randomize_order = randomize_order
         self.tasks_dir = tasks_dir
         self.prepare_run = prepare_run
+        self.progress_callback = progress_callback
         self.print_report = print_report
         self.quiet = quiet
         self.repo_root = Path(__file__).parent.parent
@@ -121,6 +123,8 @@ class BenchmarkHarness:
             for run_index in range(self.runs_per_task):
                 if self.prepare_run is not None:
                     await self.prepare_run(task, run_index)
+                if self.progress_callback is not None:
+                    await self.progress_callback(task, run_index)
                 result = await self._run_single(task, run_index)
                 task_runs.append(result)
                 if not self.quiet:

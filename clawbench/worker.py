@@ -27,6 +27,11 @@ GATEWAY_PORT_SPACING = max(20, int(os.environ.get("CLAWBENCH_GATEWAY_PORT_SPACIN
 PARALLEL_LANE_ROOT = Path(os.environ.get("CLAWBENCH_PARALLEL_LANE_ROOT", "/tmp/clawbench-lanes"))
 MAX_CONCURRENT_JOBS = max(1, min(8, int(os.environ.get("CLAWBENCH_MAX_CONCURRENT_JOBS", "1"))))
 POLL_INTERVAL = 10
+JOB_HEARTBEAT_INTERVAL_SECONDS = max(15, int(os.environ.get("CLAWBENCH_JOB_HEARTBEAT_SECONDS", "30")))
+STALE_EVALUATION_SECONDS = max(
+    JOB_HEARTBEAT_INTERVAL_SECONDS * 4,
+    int(os.environ.get("CLAWBENCH_STALE_EVALUATION_SECONDS", "1800")),
+)
 
 
 @dataclass
@@ -48,6 +53,98 @@ class ParallelLane:
         return GatewayConfig(url=self.ws_url, token=GATEWAY_TOKEN)
 
 
+@dataclass
+class LaneProgress:
+    task_id: str
+    run_index: int
+    run_total: int
+    stage: str
+
+
+@dataclass
+class JobProgressTracker:
+    total_tasks: int
+    runs_per_task: int
+    requested_parallel_lanes: int
+    current_task_id: str | None = None
+    current_run_index: int | None = None
+    current_run_total: int | None = None
+    progress_message: str = "Queued for evaluation"
+    lane_progress: dict[int, LaneProgress] = field(default_factory=dict)
+
+    def mark_status(self, message: str, *, clear_active: bool = False) -> dict[str, int | str | None]:
+        if clear_active:
+            self.current_task_id = None
+            self.current_run_index = None
+            self.current_run_total = None
+            self.lane_progress.clear()
+        self.progress_message = message
+        return self.snapshot()
+
+    def mark_serial(self, task_id: str, run_index: int, *, stage: str) -> dict[str, int | str | None]:
+        self.lane_progress.clear()
+        self.current_task_id = task_id
+        self.current_run_index = run_index + 1
+        self.current_run_total = self.runs_per_task
+        self.progress_message = f"{stage.title()} {task_id} (run {run_index + 1}/{self.runs_per_task})"
+        return self.snapshot()
+
+    def mark_lane(
+        self,
+        lane_index: int,
+        task_id: str,
+        run_index: int,
+        *,
+        stage: str,
+    ) -> dict[str, int | str | None]:
+        self.current_task_id = None
+        self.current_run_index = None
+        self.current_run_total = None
+        self.lane_progress[lane_index] = LaneProgress(
+            task_id=task_id,
+            run_index=run_index + 1,
+            run_total=self.runs_per_task,
+            stage=stage,
+        )
+        return self.snapshot()
+
+    def clear_lane(self, lane_index: int) -> dict[str, int | str | None]:
+        self.lane_progress.pop(lane_index, None)
+        if not self.lane_progress and self.current_task_id is None:
+            self.progress_message = "Waiting for benchmark aggregation"
+        return self.snapshot()
+
+    def snapshot(self) -> dict[str, int | str | None]:
+        if self.lane_progress:
+            lane_items = sorted(self.lane_progress.items())
+            progress_parts = [
+                f"L{lane_index + 1} {lane.stage} {lane.task_id} (run {lane.run_index}/{lane.run_total})"
+                for lane_index, lane in lane_items
+            ]
+            if len(lane_items) == 1:
+                _, lane = lane_items[0]
+                return {
+                    "current_task_id": lane.task_id,
+                    "current_run_index": lane.run_index,
+                    "current_run_total": lane.run_total,
+                    "progress_message": " | ".join(progress_parts),
+                }
+            return {
+                "current_task_id": ", ".join(
+                    f"L{lane_index + 1}:{lane.task_id}" for lane_index, lane in lane_items
+                ),
+                "current_run_index": None,
+                "current_run_total": None,
+                "progress_message": " | ".join(progress_parts),
+            }
+        return {
+            "current_task_id": self.current_task_id,
+            "current_run_index": self.current_run_index,
+            "current_run_total": self.current_run_total,
+            "progress_message": self.progress_message,
+        }
+
+
 class EvalWorker:
     def __init__(self, queue: JobQueue) -> None:
         self.queue = queue
@@ -62,13 +159,18 @@ class EvalWorker:
         self._running = True
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         logger.info(
-            "Worker started, polling every %ss (max concurrent jobs=%d)",
+            "Worker started, polling every %ss (max concurrent jobs=%d, heartbeat=%ss, stale=%ss)",
             POLL_INTERVAL,
             MAX_CONCURRENT_JOBS,
+            JOB_HEARTBEAT_INTERVAL_SECONDS,
+            STALE_EVALUATION_SECONDS,
         )
         while self._running:
             try:
                 self._reap_finished_jobs()
+                reclaimed = await self.queue.reclaim_stale_jobs(STALE_EVALUATION_SECONDS)
+                if reclaimed:
+                    logger.warning("Requeued stale jobs: %s", ", ".join(job.job_id for job in reclaimed))
                 available_slots = MAX_CONCURRENT_JOBS - len(self._in_flight_jobs)
                 if available_slots > 0:
                     claimed = await self.queue.claim_pending(available_slots)
@@ -91,16 +193,36 @@ class EvalWorker:
 
     async def _process_job(self, job) -> None:
         logger.info("Processing job %s: model=%s", job.job_id, job.request.model)
+        requested_parallel_lanes = max(1, int(getattr(job.request, "max_parallel_lanes", 1) or 1))
+        tasks = self._load_job_tasks(job)
+        progress = JobProgressTracker(
+            total_tasks=len(tasks),
+            runs_per_task=job.request.runs_per_task,
+            requested_parallel_lanes=requested_parallel_lanes,
+        )
+        heartbeat_stop = asyncio.Event()
+        heartbeat_task: asyncio.Task | None = None
         try:
             if getattr(job, "status", None) != JobStatus.EVALUATING:
                 await self.queue.mark_evaluating(job.job_id)
+            await self._sync_job_progress(
+                job.job_id,
+                progress.mark_status(
+                    f"Starting benchmark ({len(tasks)} tasks x {job.request.runs_per_task} runs)",
+                    clear_active=True,
+                ),
+            )
+            heartbeat_task = asyncio.create_task(self._run_job_heartbeat(job.job_id, progress, heartbeat_stop))
             self.set_active_model(job.request.model)
-            requested_parallel_lanes = max(1, int(getattr(job.request, "max_parallel_lanes", 1) or 1))
             if requested_parallel_lanes > 1:
-                result = await self._run_parallel_benchmark(job, requested_parallel_lanes)
+                result = await self._run_parallel_benchmark(job, requested_parallel_lanes, tasks, progress)
             else:
-                result = await self._run_serial_benchmark(job)
+                result = await self._run_serial_benchmark(job, tasks, progress)
 
+            await self._sync_job_progress(
+                job.job_id,
+                progress.mark_status("Uploading results", clear_active=True),
+            )
             result_path = RESULTS_DIR / f"{result.submission_id}.json"
             result_path.write_text(json.dumps(result.model_dump(), indent=2), encoding="utf-8")
 
@@ -122,6 +244,9 @@ class EvalWorker:
             logger.error("Job %s failed: %s", job.job_id, exc)
             await self.queue.mark_failed(job.job_id, str(exc))
         finally:
+            heartbeat_stop.set()
+            if heartbeat_task is not None:
+                await heartbeat_task
             # Tear the gateway down after every job so submissions never inherit
             # process state from earlier evaluations.
             self._stop_gateway()
@@ -129,14 +254,34 @@ class EvalWorker:
             self._active_model = ""
             self._serial_last_task_id = None
 
-    async def _run_serial_benchmark(self, job) -> object:
+    async def _run_serial_benchmark(
+        self,
+        job,
+        tasks: list[TaskDefinition],
+        progress: JobProgressTracker,
+    ) -> object:
         self._stop_gateway()
         await self._ensure_gateway()
-        await self._preflight_browser_support(
-            job.request.tier,
-            scenario=job.request.scenario,
-            prompt_variant=job.request.prompt_variant,
+        await self._preflight_browser_support_for_tasks(
+            tasks,
+            gateway_config=GatewayConfig(
+                url=GATEWAY_WS_URL,
+                token=GATEWAY_TOKEN,
+            ),
         )
+
+        async def prepare_run(task: TaskDefinition, run_index: int) -> None:
+            await self._sync_job_progress(
+                job.job_id,
+                progress.mark_serial(task.id, run_index, stage="preparing"),
+            )
+            await self._prepare_benchmark_run(task, run_index)
+
+        async def progress_callback(task: TaskDefinition, run_index: int) -> None:
+            await self._sync_job_progress(
+                job.job_id,
+                progress.mark_serial(task.id, run_index, stage="running"),
+            )
 
         harness = BenchmarkHarness(
             gateway_config=GatewayConfig(
@@ -148,14 +293,21 @@ class EvalWorker:
             judge_model=job.request.judge_model or os.environ.get("CLAWBENCH_JUDGE_MODEL", ""),
             runs_per_task=job.request.runs_per_task,
             tier=job.request.tier,
+            task_ids=[task.id for task in tasks],
             scenario=job.request.scenario,
             prompt_variant=job.request.prompt_variant,
-            prepare_run=self._prepare_benchmark_run,
+            prepare_run=prepare_run,
+            progress_callback=progress_callback,
         )
         return await harness.run()
 
-    async def _run_parallel_benchmark(self, job, requested_parallel_lanes: int):
-        tasks = self._load_job_tasks(job)
+    async def _run_parallel_benchmark(
+        self,
+        job,
+        requested_parallel_lanes: int,
+        tasks: list[TaskDefinition],
+        progress: JobProgressTracker,
+    ):
         if not tasks:
             raise ValueError("No tasks to run")
 
@@ -166,7 +318,7 @@ class EvalWorker:
                 job.job_id,
                 len(lanes),
             )
-            return await self._run_serial_benchmark(job)
+            return await self._run_serial_benchmark(job, tasks, progress)
 
         logger.info(
             "Running job %s across %d isolated lanes (requested=%d)",
@@ -190,8 +342,12 @@ class EvalWorker:
                 )
 
             lane_results = await asyncio.gather(
-                *(self._run_parallel_lane(job, lane) for lane in lanes),
+                *(self._run_parallel_lane(job, lane, progress) for lane in lanes),
                 return_exceptions=True,
+            )
+            await self._sync_job_progress(
+                job.job_id,
+                progress.mark_status("Aggregating lane results", clear_active=True),
             )
             combined_stats = []
             for lane, lane_result in zip(lanes, lane_results, strict=False):
@@ -226,7 +382,7 @@ class EvalWorker:
             self._stop_parallel_gateways()
             shutil.rmtree(job_root, ignore_errors=True)
 
-    async def _run_parallel_lane(self, job, lane: ParallelLane):
+    async def _run_parallel_lane(self, job, lane: ParallelLane, progress: JobProgressTracker):
         gateway_cmd = self._find_gateway_cmd()
         if not gateway_cmd:
             raise RuntimeError("OpenClaw gateway binary not found")
@@ -236,6 +392,10 @@ class EvalWorker:
 
         async def prepare_run(task: TaskDefinition, run_index: int) -> None:
             nonlocal last_task_id
+            await self._sync_job_progress(
+                job.job_id,
+                progress.mark_lane(lane.index, task.id, run_index, stage="preparing"),
+            )
             if self._should_restart_gateway_for_run(task, run_index, last_task_id):
                 logger.info(
                     "Resetting lane %d gateway before %s run %d",
@@ -246,6 +406,12 @@ class EvalWorker:
                 self._stop_parallel_gateway(lane)
                 await self._ensure_parallel_gateway(lane, gateway_cmd)
             last_task_id = task.id
+
+        async def progress_callback(task: TaskDefinition, run_index: int) -> None:
+            await self._sync_job_progress(
+                job.job_id,
+                progress.mark_lane(lane.index, task.id, run_index, stage="running"),
+            )
 
         last_task_id: str | None = None
         harness = BenchmarkHarness(
@@ -259,10 +425,12 @@ class EvalWorker:
             prompt_variant=job.request.prompt_variant,
             randomize_order=False,
             prepare_run=prepare_run,
+            progress_callback=progress_callback,
             print_report=False,
             quiet=True,
         )
         result = await harness.run()
+        await self._sync_job_progress(job.job_id, progress.clear_lane(lane.index))
         logger.info(
             "Lane %d finished with %d task stats",
             lane.index + 1,
@@ -576,6 +744,29 @@ class EvalWorker:
         for job_id, task in list(self._in_flight_jobs.items()):
             if task.done():
                 self._in_flight_jobs.pop(job_id, None)
+
+    async def _run_job_heartbeat(
+        self,
+        job_id: str,
+        progress: JobProgressTracker,
+        stop_event: asyncio.Event,
+    ) -> None:
+        while True:
+            await self._sync_job_progress(job_id, progress.snapshot())
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=JOB_HEARTBEAT_INTERVAL_SECONDS)
+                return
+            except asyncio.TimeoutError:
+                continue
+
+    async def _sync_job_progress(self, job_id: str, snapshot: dict[str, int | str | None]) -> None:
+        await self.queue.update_progress(
+            job_id,
+            current_task_id=snapshot.get("current_task_id"),
+            current_run_index=snapshot.get("current_run_index"),
+            current_run_total=snapshot.get("current_run_total"),
+            progress_message=snapshot.get("progress_message"),
+        )
 
     def _configure_browser_runtime(self, gateway_cmd: list[str], gateway_env: dict[str, str]) -> None:
         # Container browser tasks need headless + no-sandbox for reliable Chromium startup.

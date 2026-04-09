@@ -60,6 +60,13 @@ class Job(BaseModel):
     finished_at: str | None = None
     error: str | None = None
     result_id: str | None = None  # Links to BenchmarkResult.submission_id
+    attempt_count: int = 0
+    stale_requeues: int = 0
+    last_progress_at: str | None = None
+    current_task_id: str | None = None
+    current_run_index: int | None = None
+    current_run_total: int | None = None
+    progress_message: str | None = None
 
 
 class JobQueue:
@@ -157,21 +164,99 @@ class JobQueue:
                 (job for job in self._jobs.values() if job.status == JobStatus.PENDING),
                 key=lambda job: job.submitted_at,
             )
+            now_iso = _now_iso()
             for job in pending[:limit]:
                 job.status = JobStatus.EVALUATING
-                job.started_at = _now_iso()
+                job.started_at = now_iso
+                job.last_progress_at = now_iso
+                job.finished_at = None
+                job.error = None
+                job.result_id = None
+                job.current_task_id = None
+                job.current_run_index = None
+                job.current_run_total = None
+                job.progress_message = "Queued for evaluation"
+                job.attempt_count += 1
                 claimed.append(job)
             if claimed:
                 self._save_local()
                 await self._sync_to_hub()
             return claimed
 
+    async def update_progress(
+        self,
+        job_id: str,
+        *,
+        current_task_id: str | None,
+        current_run_index: int | None,
+        current_run_total: int | None,
+        progress_message: str | None,
+    ) -> None:
+        async with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != JobStatus.EVALUATING:
+                return
+            job.last_progress_at = _now_iso()
+            job.current_task_id = current_task_id
+            job.current_run_index = current_run_index
+            job.current_run_total = current_run_total
+            job.progress_message = progress_message
+            self._save_local()
+            await self._sync_to_hub()
+
+    async def reclaim_stale_jobs(self, stale_after_seconds: int) -> list[Job]:
+        """Return evaluating jobs to pending when their heartbeat is stale."""
+        if stale_after_seconds <= 0:
+            return []
+        async with self._lock:
+            reclaimed: list[Job] = []
+            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=stale_after_seconds)
+            now_iso = _now_iso()
+            for job in self._jobs.values():
+                if job.status != JobStatus.EVALUATING:
+                    continue
+                last_seen = _parse_iso(job.last_progress_at or job.started_at)
+                if last_seen is None or last_seen > cutoff:
+                    continue
+                stale_label = (job.last_progress_at or job.started_at or "")[:19]
+                job.status = JobStatus.PENDING
+                job.started_at = None
+                job.finished_at = None
+                job.error = None
+                job.result_id = None
+                job.last_progress_at = now_iso
+                job.current_task_id = None
+                job.current_run_index = None
+                job.current_run_total = None
+                job.progress_message = (
+                    f"Auto-requeued after stale evaluation lease"
+                    + (f" ({stale_label})" if stale_label else "")
+                )
+                job.stale_requeues += 1
+                reclaimed.append(job)
+            if reclaimed:
+                self._save_local()
+                await self._sync_to_hub()
+                logger.warning("Reclaimed %d stale evaluating jobs", len(reclaimed))
+            return reclaimed
+
     async def mark_evaluating(self, job_id: str) -> None:
         async with self._lock:
             job = self._jobs.get(job_id)
             if job:
                 job.status = JobStatus.EVALUATING
-                job.started_at = _now_iso()
+                now_iso = _now_iso()
+                if job.started_at is None:
+                    job.attempt_count += 1
+                job.started_at = now_iso
+                job.last_progress_at = now_iso
+                job.finished_at = None
+                job.error = None
+                job.result_id = None
+                job.current_task_id = None
+                job.current_run_index = None
+                job.current_run_total = None
+                job.progress_message = "Queued for evaluation"
                 self._save_local()
                 await self._sync_to_hub()
 
@@ -181,7 +266,12 @@ class JobQueue:
             if job:
                 job.status = JobStatus.FINISHED
                 job.finished_at = _now_iso()
+                job.last_progress_at = job.finished_at
                 job.result_id = result_id
+                job.current_task_id = None
+                job.current_run_index = None
+                job.current_run_total = None
+                job.progress_message = "Finished"
                 self._save_local()
                 await self._sync_to_hub()
 
@@ -191,7 +281,12 @@ class JobQueue:
             if job:
                 job.status = JobStatus.FAILED
                 job.finished_at = _now_iso()
+                job.last_progress_at = job.finished_at
                 job.error = error
+                job.current_task_id = None
+                job.current_run_index = None
+                job.current_run_total = None
+                job.progress_message = "Failed"
                 self._save_local()
                 await self._sync_to_hub()
 
@@ -219,3 +314,15 @@ class JobQueue:
 
 def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _parse_iso(value: str | None) -> datetime.datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)

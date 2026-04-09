@@ -1,3 +1,5 @@
+import datetime
+
 import pytest
 
 from clawbench.hub import dataset_has_submission_results, ensure_dataset_repo, resolve_dataset_repo
@@ -148,5 +150,107 @@ async def test_claim_pending_marks_multiple_jobs_evaluating(monkeypatch):
     assert queue._jobs["job-3"].status == JobStatus.FINISHED
     assert queue._jobs["job-1"].started_at is not None
     assert queue._jobs["job-2"].started_at is not None
+    assert save_calls == ["saved"]
+    assert sync_calls == ["synced"]
+
+
+@pytest.mark.asyncio
+async def test_update_progress_tracks_current_task_and_heartbeat(monkeypatch):
+    queue = JobQueue()
+    queue._jobs = {
+        "job-1": Job(
+            job_id="job-1",
+            status=JobStatus.EVALUATING,
+            started_at="2026-04-09T00:00:00+00:00",
+            request=SubmissionRequest(model="anthropic/claude-sonnet-4-6"),
+        )
+    }
+    save_calls: list[str] = []
+    sync_calls: list[str] = []
+
+    def fake_save_local() -> None:
+        save_calls.append("saved")
+
+    async def fake_sync() -> None:
+        sync_calls.append("synced")
+
+    monkeypatch.setattr(queue, "_save_local", fake_save_local)
+    monkeypatch.setattr(queue, "_sync_to_hub", fake_sync)
+
+    await queue.update_progress(
+        "job-1",
+        current_task_id="t3-monitoring-automation",
+        current_run_index=2,
+        current_run_total=3,
+        progress_message="Running t3-monitoring-automation (run 2/3)",
+    )
+
+    job = queue._jobs["job-1"]
+    assert job.current_task_id == "t3-monitoring-automation"
+    assert job.current_run_index == 2
+    assert job.current_run_total == 3
+    assert job.progress_message == "Running t3-monitoring-automation (run 2/3)"
+    assert job.last_progress_at is not None
+    assert save_calls == ["saved"]
+    assert sync_calls == ["synced"]
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_jobs_requeues_only_expired_evaluations(monkeypatch):
+    queue = JobQueue()
+    stale_started_at = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)).isoformat()
+    fresh_started_at = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=2)).isoformat()
+    queue._jobs = {
+        "job-1": Job(
+            job_id="job-1",
+            status=JobStatus.EVALUATING,
+            started_at=stale_started_at,
+            last_progress_at=stale_started_at,
+            current_task_id="t1-architecture-brief",
+            current_run_index=1,
+            current_run_total=3,
+            progress_message="Running t1-architecture-brief (run 1/3)",
+            request=SubmissionRequest(model="anthropic/claude-sonnet-4-6"),
+        ),
+        "job-2": Job(
+            job_id="job-2",
+            status=JobStatus.EVALUATING,
+            started_at=fresh_started_at,
+            last_progress_at=fresh_started_at,
+            current_task_id="t1-bugfix-discount",
+            current_run_index=1,
+            current_run_total=3,
+            progress_message="Running t1-bugfix-discount (run 1/3)",
+            request=SubmissionRequest(model="huggingface/Qwen/Qwen3-32B"),
+        ),
+    }
+    save_calls: list[str] = []
+    sync_calls: list[str] = []
+
+    def fake_save_local() -> None:
+        save_calls.append("saved")
+
+    async def fake_sync() -> None:
+        sync_calls.append("synced")
+
+    monkeypatch.setattr(queue, "_save_local", fake_save_local)
+    monkeypatch.setattr(queue, "_sync_to_hub", fake_sync)
+
+    reclaimed = await queue.reclaim_stale_jobs(stale_after_seconds=300)
+
+    assert [job.job_id for job in reclaimed] == ["job-1"]
+    stale_job = queue._jobs["job-1"]
+    assert stale_job.status == JobStatus.PENDING
+    assert stale_job.started_at is None
+    assert stale_job.current_task_id is None
+    assert stale_job.current_run_index is None
+    assert stale_job.current_run_total is None
+    assert stale_job.stale_requeues == 1
+    assert stale_job.progress_message is not None
+    assert stale_job.progress_message.startswith("Auto-requeued after stale evaluation lease")
+
+    fresh_job = queue._jobs["job-2"]
+    assert fresh_job.status == JobStatus.EVALUATING
+    assert fresh_job.current_task_id == "t1-bugfix-discount"
     assert save_calls == ["saved"]
     assert sync_calls == ["synced"]

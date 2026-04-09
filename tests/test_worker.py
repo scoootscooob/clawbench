@@ -1,10 +1,11 @@
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from clawbench.queue import JobQueue
-from clawbench.worker import GATEWAY_PORT, GATEWAY_PORT_SPACING, EvalWorker, ParallelLane
+from clawbench.worker import GATEWAY_PORT, GATEWAY_PORT_SPACING, EvalWorker, JobProgressTracker, ParallelLane
 
 
 class DummyTask:
@@ -169,3 +170,49 @@ def test_materialize_lane_runtime_spaces_ports_and_copies_auth(tmp_path: Path, m
     assert lane1.port == GATEWAY_PORT + GATEWAY_PORT_SPACING
     assert lane1.state_dir is not None
     assert (lane1.state_dir / "agents" / "main" / "agent" / "auth-profiles.json").exists()
+
+
+def test_job_progress_tracker_drops_finished_parallel_lane():
+    tracker = JobProgressTracker(total_tasks=20, runs_per_task=3, requested_parallel_lanes=2)
+
+    tracker.mark_lane(0, "t4-delegation-repair", 0, stage="running")
+    tracker.mark_lane(1, "t4-browser-research-and-code", 1, stage="running")
+    snapshot = tracker.clear_lane(0)
+
+    assert snapshot == {
+        "current_task_id": "t4-browser-research-and-code",
+        "current_run_index": 2,
+        "current_run_total": 3,
+        "progress_message": "L2 running t4-browser-research-and-code (run 2/3)",
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_job_heartbeat_flushes_latest_progress_snapshot(monkeypatch):
+    queue = JobQueue()
+    worker = EvalWorker(queue)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def fake_update_progress(job_id: str, **kwargs) -> None:
+        calls.append((job_id, kwargs))
+
+    monkeypatch.setattr(queue, "update_progress", fake_update_progress)
+
+    tracker = JobProgressTracker(total_tasks=20, runs_per_task=3, requested_parallel_lanes=1)
+    tracker.mark_serial("t1-bugfix-discount", 1, stage="running")
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await worker._run_job_heartbeat("job-1", tracker, stop_event)
+
+    assert calls == [
+        (
+            "job-1",
+            {
+                "current_task_id": "t1-bugfix-discount",
+                "current_run_index": 2,
+                "current_run_total": 3,
+                "progress_message": "Running t1-bugfix-discount (run 2/3)",
+            },
+        )
+    ]
