@@ -25,7 +25,7 @@ RUN pnpm exec tsdown --logLevel warn && \
 FROM python:3.11-slim-bookworm
 
 RUN apt-get update && \
-    apt-get install -y curl lsof && \
+    apt-get install -y curl lsof git && \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
@@ -34,6 +34,13 @@ COPY --from=gateway-build /build/dist /openclaw/dist
 COPY --from=gateway-build /build/node_modules /openclaw/node_modules
 COPY --from=gateway-build /build/package.json /openclaw/package.json
 COPY --from=gateway-build /build/extensions /openclaw/extensions
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npm install --prefix /openclaw playwright@1.59.1 && \
+    npx --prefix /openclaw playwright install --with-deps chromium && \
+    CHROME_PATH="$(echo /ms-playwright/chromium-*/chrome-linux/chrome)" && \
+    test -x "$CHROME_PATH" && \
+    ln -sf "$CHROME_PATH" /usr/bin/chromium
 
 RUN useradd -m -u 1000 user
 ENV HOME=/home/user PATH=/home/user/.local/bin:$PATH
@@ -45,15 +52,19 @@ COPY --chown=user clawbench/ clawbench/
 COPY --chown=user tasks/ tasks/
 COPY --chown=user app.py .
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir '.[dev]'
 
-RUN mkdir -p /data/results /data/queue /home/user/.openclaw && \
+RUN mkdir -p \
+    /data/results \
+    /data/queue \
+    /home/user/.openclaw/agents/dev \
+    /home/user/.openclaw/agents/main/agent && \
+    chown -R user:user /data /home/user/.openclaw && \
     chmod -R 777 /data /home/user/.openclaw
 
 USER user
 
 ENV GATEWAY_PORT=18789
-ENV OPENCLAW_GATEWAY_TOKEN=clawbench-internal-token
 ENV OPENCLAW_HOME=/home/user
 ENV OPENCLAW_STATE_DIR=/home/user/.openclaw
 

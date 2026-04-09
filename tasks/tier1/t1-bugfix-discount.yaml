@@ -1,0 +1,34 @@
+id: t1-bugfix-discount
+name: "Tier 1: Bugfix Discount"
+tier: tier1
+family: coding
+surface: coding
+pool: public_dev
+subsets: [consensus]
+capabilities: [bugfix]
+timeout_seconds: 180
+
+setup:
+  asset_packs:
+    - t1_bugfix_discount
+
+user:
+  max_turns: 2
+  turns:
+    - message: "There is a discount bug in the workspace Python files. Fix it so percentage discounts work correctly for carts with multiple items, then verify the tests pass."
+
+completion:
+  execution_checks:
+    - name: "pricing tests"
+      command: "pytest -q"
+
+trajectory:
+  required_families: ["read", "edit", "execute"]
+  min_distinct_families: 3
+  require_read_before_mutation: true
+  require_self_verification: true
+  expect_recovery: true
+
+behavior:
+  require_plan: false
+  require_progress_updates: false

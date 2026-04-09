@@ -1,0 +1,38 @@
+id: t3-feature-export
+name: "Tier 3: Feature Export"
+tier: tier3
+family: repo
+surface: coding
+pool: public_dev
+subsets: [consensus]
+capabilities: [multifile_reasoning, structured_output]
+timeout_seconds: 300
+
+setup:
+  asset_packs:
+    - t3_feature_export
+
+user:
+  max_turns: 2
+  turns:
+    - message: "Add CSV export support to the issue tracker in the workspace. Update the implementation across the relevant files, make the tests pass, and verify the CLI prints the expected CSV."
+
+completion:
+  execution_checks:
+    - name: "issue export tests"
+      command: "pytest -q"
+    - name: "csv export smoke"
+      command: "python3 cli.py export --format csv"
+      expected_stdout_file: "expected/issues.csv"
+
+trajectory:
+  required_families: ["read", "edit", "execute"]
+  min_distinct_families: 3
+  min_distinct_read_targets_pre_edit: 3
+  require_read_before_mutation: true
+  require_self_verification: true
+  expect_recovery: true
+
+behavior:
+  require_plan: true
+  require_progress_updates: true

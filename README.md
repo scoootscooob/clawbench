@@ -1,142 +1,162 @@
 # ClawBench
 
-Rigorous benchmark for AI models as [OpenClaw](https://github.com/openclaw/openclaw) agents. Runs entirely on [Hugging Face Spaces](https://huggingface.co/spaces).
+Rigorous benchmark for AI models acting as [OpenClaw](https://github.com/openclaw/openclaw) agents.
 
-## How it works
+ClawBench v0.4 extends the deterministic 20-task suite with a user-query benchmark layer built around scenario coverage, clear-vs-ambiguous prompt variants, delivery outcomes, and dataset-backed task metadata. The benchmark runs on Hugging Face Spaces or locally against an OpenClaw gateway.
 
-1. **You submit a model** via the Gradio UI (or API)
-2. **The HF Space evaluates it** — gateway, harness, and scoring all run inside the container
-3. **Results appear on the leaderboard** with three-axis scores and pass^k reliability
+## What v0.4 measures
 
-No local setup required. Everything runs on HF infrastructure.
+Each run gets a deterministic score from three per-run axes:
 
-## Architecture
+- **Completion**: run tests, scripts, and deterministic assertions against the actual workspace and gateway state.
+- **Trajectory**: score exploration before mutation, recovery quality, tool-family fit, and safety.
+- **Behavior**: score planning, progress communication, blocker handling, and destructive-command avoidance from the transcript.
 
-```
-┌─────────────────────── HF Docker Space ───────────────────────┐
-│                                                                │
-│  ┌──────────┐    ┌──────────────┐    ┌────────────────────┐   │
-│  │  Gradio   │    │  Job Queue   │    │  OpenClaw Gateway  │   │
-│  │  Frontend │───>│  (async)     │───>│  (Node.js)         │   │
-│  │  :7860    │    │              │    │  :18789 internal    │   │
-│  └──────────┘    └──────┬───────┘    └─────────┬──────────┘   │
-│                         │                       │              │
-│                   ┌─────▼───────┐    ┌─────────▼──────────┐   │
-│                   │  Eval Worker │    │  WebSocket Proto v3 │   │
-│                   │  (Python)    │───>│  sessions.create    │   │
-│                   │              │    │  sessions.send      │   │
-│                   └──────┬───────┘    │  chat.history       │   │
-│                          │            └────────────────────┘   │
-│                   ┌──────▼───────┐                             │
-│                   │  Three-Axis   │                             │
-│                   │  Scorer       │                             │
-│                   │  S + T + B    │                             │
-│                   └──────┬───────┘                             │
-│                          │                                     │
-│              ┌───────────▼────────────┐                        │
-│              │  /data/ (persistent)   │                        │
-│              │  + HF Dataset push     │                        │
-│              └────────────────────────┘                        │
-└────────────────────────────────────────────────────────────────┘
+Then each task gets a cross-run **Reliability** score based on:
+
+- `pass^k`
+- pass rate
+- score variance
+
+Per-run score:
+
+```text
+normalize(0.4 * completion + 0.3 * trajectory + 0.2 * behavior)
 ```
 
-## Three evaluation axes
+Per-task score:
 
-### Axis 1: Environment State (~50% weight)
-After the agent finishes, we query the actual world:
-- **Filesystem**: Does the file exist with correct content?
-- **Memory**: Was the fact stored in agent memory? (gateway query)
-- **Gateway state**: Cron jobs, session model, raw protocol assertions
+```text
+0.9 * mean_run_score + 0.1 * reliability_score
+```
 
-We **never** trust the agent's claims. We verify the world changed.
+The query layer adds secondary benchmark surfaces without replacing the execution-first core:
 
-### Axis 2: Trajectory (~30% weight)
-Compare actual tool call sequence against reference:
-- **Precision**: fraction of calls that were relevant
-- **Recall**: fraction of required calls that were made
-- **Order**: LIS-based sequence correctness
-- **Efficiency**: within call budget?
-- **Forbidden**: tools that must NOT be called
+- **Scenario coverage**: task-level mapping into a 12-domain user-query taxonomy distilled from `baselines/basic_usage_query_summary.json`
+- **Prompt robustness**: the same task can run in `clear` or `ambiguous` wording modes
+- **Delivery buckets**: every run is also labeled `pass`, `partial`, or `fail`
+- **Weighted query score**: tasks can carry scenario weights from the query dataset for an additional user-facing aggregate
 
-### Axis 3: Behavior (~20% weight)
-LLM judge scoped to subjective quality only — explicitly does NOT score completion or efficiency.
+## Task suite
 
-## pass^k: The production metric
+The benchmark ships 20 tasks across 5 tiers:
 
-`pass^k = p^k`. Primary leaderboard sort.
+- **Tier 1**: architecture summary, simple Python bugfix, refactor-with-tests
+- **Tier 2**: test authoring, exact-output CLI work, config bugfix, Node patching, browser form repair
+- **Tier 3**: feature implementation, multifile refactor, timezone debugging, data pipeline build, monitoring + cron
+- **Tier 4**: delegation workflow, cross-repo migration, fresh-session memory continuation, browser research + code
+- **Tier 5**: impossible request handling, contradictory requirements, hallucination-resistant evidence gathering
 
-| pass@1 | pass^5 | pass^8 |
-|--------|--------|--------|
-| 90% | 59% | 43% |
-| 95% | 77% | 66% |
-| 99% | 95% | 92% |
+Task metadata is tier-first. Each task also carries a secondary family such as `coding`, `repo`, `browser`, `tools`, `multi_tool`, or `adversarial`.
+Tasks can also carry query metadata such as scenario domain, subscenario, atomic capabilities, artifact type, prompt variants, and source-dataset mapping.
 
-## 14 tasks across 3 categories
+## Query dataset layer
 
-### General (6)
-tool_selection, multi_turn_context, coding_file_ops, research_synthesis, instruction_following, error_recovery
+This repo now includes a distilled summary of the spreadsheet-backed query corpus in `baselines/basic_usage_query_summary.json`.
 
-### OpenClaw (5)
-memory_store_recall, model_switch_continuity, subagent_handoff, cron_scheduling, skill_invocation
+That dataset contributes:
 
-### Adversarial (3)
-impossible_request, contradiction, hallucination_trap
+- a 12-domain user scenario taxonomy
+- clear and ambiguous query variants
+- artifact and prerequisite metadata
+- pass/partial/fail delivery framing
+- scenario weights for additional aggregate views
 
-## Deploy to HF Spaces
+The current 20-task suite is mapped into that taxonomy so we can see both what it measures well and which scenario domains are still under-covered.
 
-1. Create a new Space with SDK: Docker
-2. Copy `SPACE_README.md` content to the Space's `README.md`
-3. Push this repo to the Space
-4. Set secrets: `HF_TOKEN`, `ANTHROPIC_API_KEY`, `OPENCLAW_GATEWAY_TOKEN`
+## Deterministic runtime
+
+ClawBench intentionally avoids making the official score depend on a separate judge model:
+
+- user turns are scripted and condition-based, not LLM-generated
+- behavior checks are deterministic transcript rules
+- browser tasks use local task-owned services, not live public websites
+- the benchmark does not require a separate scorer API key
+
+Optional subjective judging can still sit beside the benchmark later, but the official path stays verifier-first.
+
+ClawBench now supports an optional advisory LLM judge for selected tasks. Those rubrics read the produced artifacts and transcript excerpts, report a separate judge score, and never overwrite the official deterministic benchmark score.
+Judge coverage is intentionally partial and concentrated on the more ambiguous artifact-quality tasks.
+
+Model auth comes from the OpenClaw runtime you use for the evaluated model.
+
+## Browser support
+
+Browser tasks are real browser tasks:
+
+- the Docker image installs full Node Playwright plus Chromium
+- the worker keeps the OpenClaw browser control service enabled
+- browser verification runs against local deterministic apps and docs
+
+## Hermes provenance
+
+This repo keeps only a compact aggregate trace summary in `baselines/hermes_trace_summary.json`.
+Raw Hermes traces are intentionally not checked in.
 
 ## Local development
 
 ```bash
-# Run locally (mimics HF Space)
-docker compose up
+./.venv/bin/python -m pip install -e '.[dev]'
 
-# Or without Docker:
-pip install -e .
-# Start openclaw gateway separately, then:
-clawbench run -m anthropic/claude-sonnet-4-6 --judge-api-key $ANTHROPIC_API_KEY
+# Run a tier locally
+clawbench run -m anthropic/claude-sonnet-4-6 --runs 3 --tier tier2
+
+# Add an advisory judge with an independent model for the ambiguity-heavy tasks
+# If you are using OpenAI Codex OAuth instead of OPENAI_API_KEY, prefer openai-codex/gpt-5.4
+clawbench run -m anthropic/claude-sonnet-4-6 --judge-model openai-codex/gpt-5.4 --runs 3 --tier tier5
+
+# Run the ambiguous prompt variant for a scenario slice
+clawbench run -m anthropic/claude-sonnet-4-6 --runs 3 --scenario coding_dev_assist --prompt-variant ambiguous
+
+# List tasks
+clawbench list-tasks
+
+# Run tests
+./.venv/bin/pytest -q
 ```
 
-## File structure
+You still need an OpenClaw gateway running locally for actual benchmark runs.
 
-```
-app.py                  # HF Space entry: Gradio + background worker
+## HF Space deployment
+
+1. Create a Docker Space.
+2. Copy `SPACE_README.md` into the Space `README.md`.
+3. Push this repo.
+4. Configure any model-provider auth the Space needs for the models you want to benchmark.
+
+## File layout
+
+```text
+app.py
 clawbench/
-  queue.py              # Job queue (HF Dataset-backed persistence)
-  worker.py             # Background eval worker (starts gateway, runs harness)
-  harness.py            # POMDP conversation loop + three-axis scoring
-  environment.py        # Axis 1: State verification (filesystem, memory, gateway)
-  trajectory.py         # Axis 2: Tool call precision/recall/F1
-  simulated_user.py     # Static, adaptive (LLM), adversarial user modes
-  scorer.py             # Combines axes + LLM judge for Axis 3
-  client.py             # Gateway WebSocket protocol v3 client
-  schemas.py            # Pydantic models (GoalState, ReferenceTrajectory, etc.)
-  stats.py              # Bootstrap CI, pass^k
-  upload.py             # HF Dataset push
-  cli.py                # Local CLI
+  client.py
+  cli.py
+  environment.py
+  harness.py
+  queue.py
+  render.py
+  schemas.py
+  scorer.py
+  services.py
+  simulated_user.py
+  stats.py
+  tasks.py
+  trajectory.py
+  upload.py
+  worker.py
 tasks/
-  general/              # 6 general agent tasks
-  openclaw/             # 5 OpenClaw-specific tasks
-  adversarial/          # 3 adversarial tasks
-  assets/               # Workspace files
-Dockerfile              # HF Docker Space (gateway + Python + Gradio)
-SPACE_README.md         # HF Space metadata (copy to README.md when deploying)
+  tier1/ ... tier5/
+  assets/
+baselines/
+  hermes_trace_summary.json
+tests/
+Dockerfile
+SPACE_README.md
 ```
 
-## Based on
+## References
 
-- [TAU-bench](https://github.com/sierra-research/tau-bench) — POMDP, pass^k, database state verification
-- [SWE-bench](https://www.swebench.com/) — deterministic test-based verification
-- [WebArena](https://webarena.dev/) — programmatic environment state assertions
-- [Open LLM Leaderboard](https://huggingface.co/spaces/open-llm-leaderboard/open_llm_leaderboard) — HF Space submission queue architecture
-- [Anthropic: Demystifying evals](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents) — three-tier evaluation
-- [Anthropic: Infrastructure noise](https://www.anthropic.com/engineering/infrastructure-noise) — statistical rigor
-- [ABC checklist](https://arxiv.org/html/2507.02825v1) — anti-gaming, task/outcome validity
-
-## License
-
-MIT
+- [TAU-bench](https://github.com/sierra-research/tau-bench)
+- [SWE-bench](https://www.swebench.com/)
+- [WebArena](https://webarena.dev/)
+- [Anthropic: Demystifying evals for agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)

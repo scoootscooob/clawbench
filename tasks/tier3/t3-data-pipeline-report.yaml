@@ -1,0 +1,35 @@
+id: t3-data-pipeline-report
+name: "Tier 3: Data Pipeline Report"
+tier: tier3
+family: multi_tool
+surface: coding
+pool: public_dev
+subsets: [consensus]
+capabilities: [structured_output, tool_composition]
+timeout_seconds: 300
+
+setup:
+  asset_packs:
+    - t3_data_pipeline_report
+
+user:
+  max_turns: 2
+  turns:
+    - message: "Build the missing data pipeline steps in the workspace so `python3 pipeline.py input/sales.csv input/regions.json` prints the expected region report. Verify the final output."
+
+completion:
+  execution_checks:
+    - name: "pipeline report output"
+      command: "python3 pipeline.py input/sales.csv input/regions.json"
+      expected_stdout_file: "expected/report.txt"
+
+trajectory:
+  required_families: ["read", "edit", "execute"]
+  min_distinct_families: 3
+  require_read_before_mutation: true
+  require_self_verification: true
+  expect_recovery: true
+
+behavior:
+  require_plan: true
+  require_progress_updates: true

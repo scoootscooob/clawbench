@@ -1,0 +1,4 @@
+East: 150
+North: 50
+West: 80
+

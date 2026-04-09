@@ -1,0 +1,35 @@
+id: t2-config-loader
+name: "Tier 2: Config Loader"
+tier: tier2
+family: repo
+surface: coding
+pool: public_dev
+subsets: [consensus]
+capabilities: [bugfix, multifile_reasoning]
+timeout_seconds: 240
+
+setup:
+  asset_packs:
+    - t2_config_loader
+
+user:
+  max_turns: 2
+  turns:
+    - message: "The config loader in the workspace is supposed to merge defaults, file values, and environment overrides. Fix the precedence and validation bugs so the pytest suite passes."
+
+completion:
+  execution_checks:
+    - name: "config loader tests"
+      command: "pytest -q"
+
+trajectory:
+  required_families: ["read", "edit", "execute"]
+  min_distinct_families: 3
+  min_distinct_read_targets_pre_edit: 2
+  require_read_before_mutation: true
+  require_self_verification: true
+  expect_recovery: true
+
+behavior:
+  require_plan: false
+  require_progress_updates: false

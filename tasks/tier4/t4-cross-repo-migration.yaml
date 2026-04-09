@@ -1,0 +1,36 @@
+id: t4-cross-repo-migration
+name: "Tier 4: Cross Repo Migration"
+tier: tier4
+family: repo
+surface: coding
+pool: public_dev
+subsets: [consensus, hard]
+capabilities: [cross_repo_change, multifile_reasoning]
+timeout_seconds: 360
+
+setup:
+  asset_packs:
+    - t4_cross_repo_migration
+
+user:
+  max_turns: 2
+  turns:
+    - message: "The local mini-repos in the workspace need a small contract migration from `customer_name` to `account_name`. Update both repos so the schema and consumer stay aligned, then run the tests."
+
+completion:
+  execution_checks:
+    - name: "cross repo pytest"
+      command: "pytest -q"
+
+trajectory:
+  required_families: ["search", "read", "edit", "execute"]
+  min_distinct_families: 4
+  min_distinct_read_targets_pre_edit: 4
+  min_distinct_mutation_targets: 2
+  require_read_before_mutation: true
+  require_self_verification: true
+  expect_recovery: true
+
+behavior:
+  require_plan: true
+  require_progress_updates: true

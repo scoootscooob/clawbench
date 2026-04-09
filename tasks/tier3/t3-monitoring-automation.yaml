@@ -1,0 +1,52 @@
+id: t3-monitoring-automation
+name: "Tier 3: Monitoring Automation"
+tier: tier3
+family: tools
+surface: coding
+pool: public_dev
+subsets: [hard]
+capabilities: [automation, tool_composition]
+timeout_seconds: 300
+
+setup:
+  asset_packs:
+    - t3_monitoring_automation
+  background_services:
+    - name: monitor_target
+      command: "python3 monitor_target.py"
+      ready_path: "/health"
+      startup_timeout_seconds: 20
+
+user:
+  max_turns: 3
+  turns:
+    - message: "The existing `check_service.py` is broken. Fix it so `python3 verify_monitoring.py http://127.0.0.1:{monitor_target_port}/health` passes. The script must print `healthy` for the healthy endpoint and exit non-zero for a bad endpoint."
+    - message: "Now add an hourly OpenClaw cron job that runs `check_service.py` against the same health URL, then make sure the verification command still passes."
+      after_assistant_turns: 1
+
+completion:
+  files:
+    - path: check_service.py
+      exists: true
+      content_contains:
+        - "urllib"
+  cron:
+    - exists: true
+      description_contains: "check_service.py"
+  execution_checks:
+    - name: "monitoring workflow verify"
+      command: "python3 verify_monitoring.py http://127.0.0.1:{monitor_target_port}/health"
+
+trajectory:
+  required_families: ["read", "edit", "execute", "cron"]
+  required_pre_edit_families: ["read"]
+  required_post_edit_families: ["execute"]
+  min_distinct_families: 4
+  min_pre_edit_exploration_calls: 1
+  min_post_edit_verification_calls: 1
+  require_read_before_mutation: true
+  require_self_verification: true
+
+behavior:
+  require_plan: true
+  require_progress_updates: true

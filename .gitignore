@@ -7,3 +7,5 @@ dist/
 .pytest_cache/
 results/
 .env
+.tmp/
+data/

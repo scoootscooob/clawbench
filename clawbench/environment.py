@@ -1,188 +1,377 @@
-"""Environment state verification — the ground truth axis.
-
-Verifies the WORLD changed correctly, not that the agent SAID it changed.
-Queries workspace filesystem, gateway protocol state, and agent memory
-to compare actual state against the task's goal state.
-"""
+"""Completion verification for ClawBench v0.3."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
 from clawbench.client import GatewayClient
+from clawbench.render import render_template, render_value
 from clawbench.schemas import (
+    CompletionResult,
+    CompletionSpec,
     CronState,
+    ExecutionCheck,
+    ExecutionCheckResult,
     FileState,
     GatewayAssertion,
-    GoalState,
     MemoryState,
     SessionState,
-    StateVerificationResult,
+    Transcript,
 )
 
 logger = logging.getLogger(__name__)
 
 
-async def verify_goal_state(
-    goal: GoalState,
+async def verify_completion(
+    completion: CompletionSpec,
+    *,
     workspace: Path,
     client: GatewayClient,
     session_key: str,
-) -> StateVerificationResult:
-    """Verify the environment matches the expected goal state.
-
-    This is the core of what makes this a real agent benchmark:
-    we don't read the agent's response — we inspect the actual world.
-    """
+    agent_id: str | None = None,
+    runtime_values: dict[str, Any],
+    transcript: Transcript | None = None,
+) -> CompletionResult:
     total = 0
     passed = 0
     failures: list[str] = []
+    execution_results: list[ExecutionCheckResult] = []
 
-    # 1. Filesystem state
-    for fs in goal.files:
-        result, reason = _verify_file(fs, workspace)
+    for spec in completion.files:
+        ok, reason = _verify_file(spec, workspace, runtime_values)
         total += 1
-        if result:
+        if ok:
             passed += 1
         else:
-            failures.append(f"FILE {fs.path}: {reason}")
+            failures.append(f"FILE {spec.path}: {reason}")
 
-    # 2. Memory state (query gateway for memory entries)
-    for ms in goal.memory:
-        result, reason = await _verify_memory(ms, client, session_key)
+    for spec in completion.memory:
+        ok, reason = await _verify_memory(spec, client, session_key, agent_id=agent_id, transcript=transcript)
         total += 1
-        if result:
+        if ok:
             passed += 1
         else:
-            failures.append(f"MEMORY {ms.key_pattern}: {reason}")
+            failures.append(f"MEMORY {spec.key_pattern}: {reason}")
 
-    # 3. Session state
-    if goal.session:
-        result, reason = await _verify_session(goal.session, client, session_key)
+    if completion.session:
+        ok, reason = await _verify_session(completion.session, client, session_key)
         total += 1
-        if result:
+        if ok:
             passed += 1
         else:
             failures.append(f"SESSION: {reason}")
 
-    # 4. Cron/scheduled task state
-    for cs in goal.cron:
-        result, reason = await _verify_cron(cs, client)
+    for spec in completion.cron:
+        ok, reason = await _verify_cron(spec, client)
         total += 1
-        if result:
+        if ok:
             passed += 1
         else:
             failures.append(f"CRON: {reason}")
 
-    # 5. Raw gateway assertions (most flexible — query any protocol method)
-    for ga in goal.gateway_assertions:
-        result, reason = await _verify_gateway_assertion(ga, client)
+    for spec in completion.gateway_assertions:
+        ok, reason = await _verify_gateway_assertion(spec, client)
         total += 1
-        if result:
+        if ok:
             passed += 1
         else:
-            failures.append(f"GATEWAY {ga.method}:{ga.assert_path}: {reason}")
+            failures.append(f"GATEWAY {spec.method}:{spec.assert_path}: {reason}")
 
-    score = passed / total if total > 0 else 1.0
+    for spec in completion.execution_checks:
+        result = await run_execution_check(spec, workspace=workspace, runtime_values=runtime_values)
+        execution_results.append(result)
+        total += 1
+        if result.passed:
+            passed += 1
+        else:
+            failures.append(f"EXEC {spec.name}: {result.reason}")
 
-    return StateVerificationResult(
+    score = passed / total if total else 1.0
+    return CompletionResult(
         total_assertions=total,
         passed_assertions=passed,
         failed_assertions=failures,
-        score=score,
+        execution_results=execution_results,
+        score=round(score, 4),
     )
 
 
-# ---------------------------------------------------------------------------
-# Filesystem verification
-# ---------------------------------------------------------------------------
+async def run_execution_check(
+    spec: ExecutionCheck,
+    *,
+    workspace: Path,
+    runtime_values: dict[str, Any],
+) -> ExecutionCheckResult:
+    rendered_command = render_template(spec.command, runtime_values)
+    rendered_cwd = workspace / render_template(spec.cwd, runtime_values)
+    rendered_env = render_value(spec.env, runtime_values)
+    import os
+    import sys
 
-
-def _verify_file(spec: FileState, workspace: Path) -> tuple[bool, str]:
-    """Check a workspace file against its expected state."""
-    path = workspace / spec.path
-    exists = path.exists() and path.is_file()
-
-    if not spec.exists:
-        if exists:
-            return False, "File should not exist but does"
-        return True, "Correctly absent"
-
-    if not exists:
-        return False, "File does not exist"
+    full_env = {
+        **os.environ,
+        **{key: str(value) for key, value in rendered_env.items()},
+        "PYTHONUNBUFFERED": "1",
+    }
+    python_bin_dir = str(Path(sys.executable).parent)
+    full_env["PATH"] = f"{python_bin_dir}:{full_env.get('PATH', '')}"
+    python_path_parts = [str(rendered_cwd), str(workspace)]
+    existing_pythonpath = full_env.get("PYTHONPATH")
+    if existing_pythonpath:
+        python_path_parts.append(existing_pythonpath)
+    full_env["PYTHONPATH"] = ":".join(python_path_parts)
 
     try:
-        content = path.read_text(errors="replace")
-    except Exception as e:
-        return False, f"Cannot read file: {e}"
+        if spec.shell:
+            process = await asyncio.create_subprocess_shell(
+                rendered_command,
+                cwd=str(rendered_cwd),
+                env=full_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                *shlex.split(rendered_command),
+                cwd=str(rendered_cwd),
+                env=full_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            process.communicate(),
+            timeout=spec.timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.communicate()
+        return ExecutionCheckResult(
+            name=spec.name,
+            command=rendered_command,
+            exit_code=-1,
+            passed=False,
+            reason=f"Timed out after {spec.timeout_seconds}s",
+        )
+    except Exception as exc:
+        return ExecutionCheckResult(
+            name=spec.name,
+            command=rendered_command,
+            exit_code=-1,
+            passed=False,
+            reason=str(exc),
+        )
 
-    if spec.min_size_bytes > 0 and path.stat().st_size < spec.min_size_bytes:
-        return False, f"File too small: {path.stat().st_size} < {spec.min_size_bytes}"
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    passed, reason = _evaluate_execution_result(spec, workspace, runtime_values, process.returncode, stdout, stderr)
+    return ExecutionCheckResult(
+        name=spec.name,
+        command=rendered_command,
+        exit_code=process.returncode,
+        stdout=stdout,
+        stderr=stderr,
+        passed=passed,
+        reason=reason,
+    )
 
-    for pattern in spec.content_contains:
-        if not re.search(re.escape(pattern), content, re.IGNORECASE):
-            return False, f"Missing expected content: '{pattern}'"
 
-    for pattern in spec.content_not_contains:
-        if re.search(re.escape(pattern), content, re.IGNORECASE):
-            return False, f"Contains forbidden content: '{pattern}'"
+def _evaluate_execution_result(
+    spec: ExecutionCheck,
+    workspace: Path,
+    runtime_values: dict[str, Any],
+    exit_code: int,
+    stdout: str,
+    stderr: str,
+) -> tuple[bool, str]:
+    if exit_code != spec.expected_exit_code:
+        return False, f"Exit code {exit_code} != expected {spec.expected_exit_code}"
 
-    if spec.content_matches:
-        if not re.search(spec.content_matches, content, re.MULTILINE | re.DOTALL):
-            return False, f"Content does not match pattern: {spec.content_matches[:60]}"
+    for token in spec.stdout_contains:
+        rendered = render_template(token, runtime_values)
+        if rendered not in stdout:
+            return False, f"stdout missing '{rendered}'"
+
+    for token in spec.stdout_not_contains:
+        rendered = render_template(token, runtime_values)
+        if rendered in stdout:
+            return False, f"stdout unexpectedly contains '{rendered}'"
+
+    for token in spec.stderr_contains:
+        rendered = render_template(token, runtime_values)
+        if rendered not in stderr:
+            return False, f"stderr missing '{rendered}'"
+
+    if spec.stdout_matches and not re.search(render_template(spec.stdout_matches, runtime_values), stdout, re.MULTILINE | re.DOTALL):
+        return False, f"stdout does not match {spec.stdout_matches}"
+
+    if spec.stderr_matches and not re.search(render_template(spec.stderr_matches, runtime_values), stderr, re.MULTILINE | re.DOTALL):
+        return False, f"stderr does not match {spec.stderr_matches}"
+
+    if spec.expected_stdout is not None:
+        rendered = render_template(spec.expected_stdout, runtime_values).strip()
+        if stdout.strip() != rendered:
+            return False, "stdout did not match expected text"
+
+    if spec.expected_stdout_file:
+        expected_path = workspace / render_template(spec.expected_stdout_file, runtime_values)
+        if stdout.strip() != expected_path.read_text(encoding="utf-8").strip():
+            return False, f"stdout did not match {spec.expected_stdout_file}"
+
+    if spec.expected_json is not None:
+        try:
+            parsed = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            return False, f"stdout was not valid JSON: {exc}"
+        if parsed != render_value(spec.expected_json, runtime_values):
+            return False, "stdout JSON did not match expected JSON"
+
+    if spec.expected_json_file:
+        expected_path = workspace / render_template(spec.expected_json_file, runtime_values)
+        try:
+            parsed = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            return False, f"stdout was not valid JSON: {exc}"
+        expected_json = json.loads(expected_path.read_text(encoding="utf-8"))
+        if parsed != expected_json:
+            return False, f"stdout JSON did not match {spec.expected_json_file}"
 
     return True, "OK"
 
 
-# ---------------------------------------------------------------------------
-# Memory verification (query gateway)
-# ---------------------------------------------------------------------------
+def _verify_file(spec: FileState, workspace: Path, runtime_values: dict[str, Any]) -> tuple[bool, str]:
+    path = workspace / render_template(spec.path, runtime_values)
+    exists = path.exists() and path.is_file()
+
+    if not spec.exists:
+        return (not exists, "Correctly absent" if not exists else "File should not exist")
+    if not exists:
+        return False, "File does not exist"
+
+    content = path.read_text(encoding="utf-8", errors="replace")
+    if spec.min_size_bytes > 0 and path.stat().st_size < spec.min_size_bytes:
+        return False, f"File too small: {path.stat().st_size} < {spec.min_size_bytes}"
+
+    for token in spec.content_contains:
+        rendered = render_template(token, runtime_values)
+        if rendered not in content:
+            return False, f"Missing expected content '{rendered}'"
+
+    for token in spec.content_not_contains:
+        rendered = render_template(token, runtime_values)
+        if rendered in content:
+            return False, f"Contains forbidden content '{rendered}'"
+
+    if spec.content_matches and not re.search(
+        render_template(spec.content_matches, runtime_values),
+        content,
+        re.MULTILINE | re.DOTALL,
+    ):
+        return False, f"Content does not match {spec.content_matches}"
+
+    return True, "OK"
 
 
 async def _verify_memory(
     spec: MemoryState,
     client: GatewayClient,
     session_key: str,
+    *,
+    agent_id: str | None = None,
+    transcript: Transcript | None = None,
 ) -> tuple[bool, str]:
-    """Query agent memory via gateway and verify state."""
     try:
-        # Use the gateway to search memory
-        resp = await client._rpc("memory.search", {
-            "query": spec.key_pattern,
-            "sessionKey": session_key,
-            "limit": 10,
-        })
-        payload = resp.get("payload", {})
-        entries = payload.get("entries", [])
-
+        response = await client._rpc(
+            "memory.search",
+            {
+                "query": spec.key_pattern,
+                "sessionKey": session_key,
+                "limit": 20,
+            },
+        )
+        entries = response.get("payload", {}).get("entries", [])
         if not spec.exists:
-            if entries:
-                return False, "Memory entry exists but should not"
-            return True, "Correctly absent"
-
+            return (not entries, "Correctly absent" if not entries else "Memory entry exists")
         if not entries:
             return False, "No matching memory entries found"
-
-        # Check value contains
-        all_values = " ".join(str(e.get("value", "")) for e in entries)
-        for pattern in spec.value_contains:
-            if pattern.lower() not in all_values.lower():
-                return False, f"Memory value missing: '{pattern}'"
-
+        all_values = " ".join(str(entry.get("value", "")) for entry in entries)
+        for token in spec.value_contains:
+            if token.lower() not in all_values.lower():
+                return False, f"Memory value missing '{token}'"
         return True, "OK"
-    except Exception as e:
-        # Memory might not be available — degrade gracefully
-        logger.warning("Memory verification failed: %s", e)
-        return False, f"Memory query failed: {e}"
+    except Exception as exc:
+        logger.info("memory.search unavailable for verification, falling back to agent memory files: %s", exc)
+
+    if not agent_id:
+        return False, "memory.search unavailable and no agent id was provided for fallback verification"
+
+    fallback_text = await _read_agent_memory_text(client, agent_id)
+    normalized = fallback_text.lower()
+    needle = spec.key_pattern.lower()
+    found = needle in normalized
+
+    if not spec.exists:
+        return (not found, "Correctly absent" if not found else "Memory entry exists")
+    if found:
+        for token in spec.value_contains:
+            if token.lower() not in normalized:
+                return False, f"Memory value missing '{token}'"
+        return True, "OK"
+
+    if transcript and _memory_visible_in_transcript(spec, transcript):
+        return True, "Verified from transcript fallback"
+    return False, "No matching memory content found in persisted memory files or transcript fallback"
 
 
-# ---------------------------------------------------------------------------
-# Session state verification
-# ---------------------------------------------------------------------------
+async def _read_agent_memory_text(client: GatewayClient, agent_id: str) -> str:
+    contents: list[str] = []
+    for file_name in (
+        "MEMORY.md",
+        "memory.md",
+        "memory/MEMORY.md",
+        "memory/memory.md",
+        "memory/notes.md",
+        "memory/NOTES.md",
+        "notes.md",
+    ):
+        try:
+            payload = await client.get_agent_file(agent_id, file_name)
+        except Exception:
+            continue
+        file_entry = payload.get("file", {})
+        content = file_entry.get("content", "")
+        if isinstance(content, str) and content.strip():
+            contents.append(content)
+    return "\n".join(contents)
+
+
+def _memory_visible_in_transcript(spec: MemoryState, transcript: Transcript) -> bool:
+    needle = spec.key_pattern.lower()
+    for call in transcript.tool_call_sequence:
+        family = (call.family or "").lower()
+        name = call.name.lower()
+        path = str(call.input.get("path", "")).lower()
+        if family != "memory" and "memory" not in path:
+            continue
+        if family == "memory" and "search" in name and "write" not in name and "store" not in name and "save" not in name:
+            continue
+
+        serialized_bits = [call.output, call.error]
+        try:
+            serialized_bits.append(json.dumps(call.input, sort_keys=True))
+        except TypeError:
+            serialized_bits.append(str(call.input))
+        haystack = " ".join(bit for bit in serialized_bits if bit).lower()
+        if needle not in haystack:
+            continue
+        if all(token.lower() in haystack for token in spec.value_contains):
+            return True
+    return False
 
 
 async def _verify_session(
@@ -190,129 +379,83 @@ async def _verify_session(
     client: GatewayClient,
     session_key: str,
 ) -> tuple[bool, str]:
-    """Verify session state via gateway protocol."""
     try:
-        resp = await client._rpc("sessions.resolve", {"key": session_key})
-        payload = resp.get("payload", {})
-
+        response = await client._rpc("sessions.resolve", {"key": session_key})
+        payload = response.get("payload", {})
         if not spec.should_exist:
             return False, "Session exists but should not"
-
         if spec.model_should_be:
-            actual_model = payload.get("model", "")
-            if spec.model_should_be.lower() not in actual_model.lower():
-                return False, f"Model mismatch: expected '{spec.model_should_be}', got '{actual_model}'"
-
+            actual = str(payload.get("model", ""))
+            if spec.model_should_be.lower() not in actual.lower():
+                return False, f"Model mismatch: expected {spec.model_should_be}, got {actual}"
         return True, "OK"
-    except Exception as e:
+    except Exception as exc:
         if not spec.should_exist:
             return True, "Correctly absent"
-        return False, f"Session query failed: {e}"
+        return False, str(exc)
 
 
-# ---------------------------------------------------------------------------
-# Cron state verification
-# ---------------------------------------------------------------------------
-
-
-async def _verify_cron(
-    spec: CronState,
-    client: GatewayClient,
-) -> tuple[bool, str]:
-    """Verify scheduled task state via gateway protocol."""
+async def _verify_cron(spec: CronState, client: GatewayClient) -> tuple[bool, str]:
     try:
-        resp = await client._rpc("cron.list", {})
-        payload = resp.get("payload", {})
-        jobs = payload.get("jobs", [])
-
+        response = await client._rpc("cron.list", {})
+        jobs = response.get("payload", {}).get("jobs", [])
         if not spec.exists:
-            if jobs:
-                return False, "Cron jobs exist but should not"
-            return True, "Correctly absent"
-
+            return (not jobs, "Correctly absent" if not jobs else "Cron jobs exist")
         if not jobs:
             return False, "No cron jobs found"
-
-        if spec.description_contains:
-            any_match = any(
-                spec.description_contains.lower() in str(j).lower()
-                for j in jobs
-            )
-            if not any_match:
-                return False, f"No cron job matching '{spec.description_contains}'"
-
+        if spec.description_contains and not any(
+            spec.description_contains.lower() in json.dumps(job).lower()
+            for job in jobs
+        ):
+            return False, f"No cron job matched '{spec.description_contains}'"
         return True, "OK"
-    except Exception as e:
-        logger.warning("Cron verification failed: %s", e)
-        return False, f"Cron query failed: {e}"
-
-
-# ---------------------------------------------------------------------------
-# Raw gateway assertion
-# ---------------------------------------------------------------------------
+    except Exception as exc:
+        return False, str(exc)
 
 
 async def _verify_gateway_assertion(
     spec: GatewayAssertion,
     client: GatewayClient,
 ) -> tuple[bool, str]:
-    """Execute a raw gateway protocol query and verify the result."""
     try:
-        resp = await client._rpc(spec.method, spec.params)
-        payload = resp.get("payload", {})
-
-        # Navigate the JSONPath-like assertion path
+        response = await client._rpc(spec.method, spec.params)
+        payload = response.get("payload", {})
         value = _resolve_path(payload, spec.assert_path)
-
         if not spec.assert_exists:
-            if value is not None:
-                return False, f"Path {spec.assert_path} exists but should not"
-            return True, "Correctly absent"
-
+            return (value is None, "Correctly absent" if value is None else "Path exists")
         if value is None:
-            return False, f"Path {spec.assert_path} not found in response"
-
-        if spec.assert_equals is not None:
-            if value != spec.assert_equals:
-                return False, f"Expected {spec.assert_equals}, got {value}"
-
-        if spec.assert_contains is not None:
-            if spec.assert_contains.lower() not in str(value).lower():
-                return False, f"Value does not contain '{spec.assert_contains}'"
-
+            return False, f"Path {spec.assert_path} not found"
+        if spec.assert_equals is not None and value != spec.assert_equals:
+            return False, f"Expected {spec.assert_equals}, got {value}"
+        if spec.assert_contains is not None and spec.assert_contains.lower() not in str(value).lower():
+            return False, f"Expected '{spec.assert_contains}' in {value}"
         return True, "OK"
-    except Exception as e:
-        return False, f"Gateway query {spec.method} failed: {e}"
+    except Exception as exc:
+        return False, str(exc)
 
 
-def _resolve_path(data: Any, path: str) -> Any:
-    """Resolve a simple JSONPath-like expression.
-
-    Supports: $.key, $.array[0], $.nested.path
-    """
-    if not path or path == "$":
-        return data
-
-    parts = path.lstrip("$.").split(".")
-    current = data
-
-    for part in parts:
-        if current is None:
-            return None
-
-        # Handle array index: key[0]
-        bracket_match = re.match(r"(\w+)\[(\d+)\]", part)
-        if bracket_match:
-            key, idx = bracket_match.group(1), int(bracket_match.group(2))
-            if isinstance(current, dict):
-                current = current.get(key)
-            if isinstance(current, list) and idx < len(current):
-                current = current[idx]
-            else:
+def _resolve_path(payload: Any, path: str) -> Any:
+    if path == "$":
+        return payload
+    current = payload
+    for part in path.lstrip("$").lstrip(".").split("."):
+        if not part:
+            continue
+        match = re.fullmatch(r"([^\[]+)\[(\d+)\]", part)
+        if match:
+            key, index = match.groups()
+            if not isinstance(current, dict) or key not in current:
                 return None
-        elif isinstance(current, dict):
-            current = current.get(part)
-        else:
-            return None
-
+            current = current[key]
+            if not isinstance(current, list):
+                return None
+            idx = int(index)
+            if idx >= len(current):
+                return None
+            current = current[idx]
+            continue
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        return None
     return current

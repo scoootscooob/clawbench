@@ -1,0 +1,34 @@
+{
+  "source": "lambda/hermes-agent-reasoning-traces",
+  "sessions_analyzed": 14701,
+  "summary_version": "2026-04-08",
+  "observed_complexity": {
+    "avg_turns": 24.3,
+    "avg_tool_calls": 13.9,
+    "max_turns": 54,
+    "tool_diversity_per_task": "3-6"
+  },
+  "observed_categories": [
+    {"name": "terminal_coding", "count": 4247},
+    {"name": "agent_tools", "count": 4249},
+    {"name": "repository_tasks", "count": 2131},
+    {"name": "browser_automation", "count": 1687},
+    {"name": "file_operations", "count": 891},
+    {"name": "multi_tool", "count": 859},
+    {"name": "scheduling", "count": 308},
+    {"name": "planning", "count": 293},
+    {"name": "conversational", "count": 36}
+  ],
+  "task_family_mapping": {
+    "tier1": ["coding", "tools"],
+    "tier2": ["coding", "repo", "browser"],
+    "tier3": ["repo", "multi_tool", "tools"],
+    "tier4": ["repo", "multi_tool", "browser"],
+    "tier5": ["adversarial"]
+  },
+  "design_notes": [
+    "The benchmark keeps only aggregate Hermes-derived statistics for reproducibility.",
+    "Raw traces and large processed samples are intentionally excluded from the repo.",
+    "Task design emphasizes longer trajectories, explicit recovery, and multi-tool behavior."
+  ]
+}

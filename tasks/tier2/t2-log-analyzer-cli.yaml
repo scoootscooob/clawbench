@@ -1,0 +1,34 @@
+id: t2-log-analyzer-cli
+name: "Tier 2: Log Analyzer CLI"
+tier: tier2
+family: coding
+surface: coding
+pool: public_dev
+subsets: [consensus]
+capabilities: [structured_output]
+timeout_seconds: 240
+
+setup:
+  asset_packs:
+    - t2_log_analyzer_cli
+
+user:
+  max_turns: 2
+  turns:
+    - message: "Finish the log analyzer CLI so `python3 analyze_logs.py logs/app.log --json` prints the expected JSON summary. Keep the implementation simple and verify it works."
+
+completion:
+  execution_checks:
+    - name: "log analyzer output"
+      command: "python3 analyze_logs.py logs/app.log --json"
+      expected_json_file: "expected/output.json"
+
+trajectory:
+  required_families: ["read", "edit", "execute"]
+  min_distinct_families: 3
+  require_read_before_mutation: true
+  require_self_verification: true
+
+behavior:
+  require_plan: false
+  require_progress_updates: false

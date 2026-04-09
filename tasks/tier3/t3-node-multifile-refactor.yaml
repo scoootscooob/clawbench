@@ -1,0 +1,40 @@
+id: t3-node-multifile-refactor
+name: "Tier 3: Node Multifile Refactor"
+tier: tier3
+family: repo
+surface: coding
+pool: public_dev
+subsets: [consensus]
+capabilities: [refactor, multifile_reasoning]
+timeout_seconds: 300
+
+setup:
+  asset_packs:
+    - t3_node_multifile_refactor
+
+user:
+  max_turns: 2
+  turns:
+    - message: "Refactor the Node project so the duplicated user-id and date parsing logic is centralized in `src/shared.js`. Update the modules to use the shared helper and keep the test suite green."
+
+completion:
+  files:
+    - path: src/shared.js
+      exists: true
+      content_contains:
+        - "normalizeUserId"
+  execution_checks:
+    - name: "node refactor tests"
+      command: "node --test"
+
+trajectory:
+  required_families: ["read", "edit", "execute"]
+  min_distinct_families: 3
+  min_distinct_read_targets_pre_edit: 3
+  min_distinct_mutation_targets: 2
+  require_read_before_mutation: true
+  require_self_verification: true
+
+behavior:
+  require_plan: true
+  require_progress_updates: true

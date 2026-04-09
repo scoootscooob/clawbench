@@ -1,0 +1,34 @@
+id: t3-debug-timezone-regression
+name: "Tier 3: Debug Timezone Regression"
+tier: tier3
+family: repo
+surface: coding
+pool: public_dev
+subsets: [consensus, hard]
+capabilities: [bugfix, multifile_reasoning]
+timeout_seconds: 300
+
+setup:
+  asset_packs:
+    - t3_debug_timezone_regression
+
+user:
+  max_turns: 2
+  turns:
+    - message: "The scheduling module has a timezone regression and the tests are failing. Find the root cause, fix it, and rerun the pytest suite."
+
+completion:
+  execution_checks:
+    - name: "timezone regression tests"
+      command: "pytest -q"
+
+trajectory:
+  required_families: ["read", "edit", "execute"]
+  min_distinct_families: 3
+  require_read_before_mutation: true
+  require_self_verification: true
+  expect_recovery: true
+
+behavior:
+  require_plan: true
+  require_progress_updates: true

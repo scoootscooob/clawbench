@@ -1,0 +1,35 @@
+id: t2-node-search-patch
+name: "Tier 2: Node Search Patch"
+tier: tier2
+family: repo
+surface: coding
+pool: public_dev
+subsets: [consensus]
+capabilities: [bugfix, multifile_reasoning]
+timeout_seconds: 240
+
+setup:
+  asset_packs:
+    - t2_node_search_patch
+
+user:
+  max_turns: 2
+  turns:
+    - message: "A small Node search utility is failing tests and the bug spans multiple files. Find the root cause and patch it so `node --test` passes."
+
+completion:
+  execution_checks:
+    - name: "node search tests"
+      command: "node --test"
+
+trajectory:
+  required_families: ["search", "read", "edit", "execute"]
+  min_distinct_families: 4
+  min_distinct_read_targets_pre_edit: 3
+  require_read_before_mutation: true
+  require_self_verification: true
+  expect_recovery: true
+
+behavior:
+  require_plan: false
+  require_progress_updates: false

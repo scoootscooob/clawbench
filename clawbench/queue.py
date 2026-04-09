@@ -44,8 +44,12 @@ class SubmissionRequest(BaseModel):
     model: str  # e.g. "anthropic/claude-sonnet-4-6"
     provider: str = ""  # e.g. "anthropic"
     api_key_env: str = ""  # Env var name holding the API key (NOT the key itself)
+    judge_model: str = ""
     runs_per_task: int = 5
-    category: str | None = None  # Filter to specific category
+    max_parallel_lanes: int = Field(default=1, ge=1, le=8)
+    tier: str | None = None  # Filter to a specific tier
+    scenario: str | None = None
+    prompt_variant: str = "clear"
     submitter: str = ""  # HF username
     notes: str = ""
 
