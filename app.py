@@ -242,9 +242,29 @@ DESCRIPTION = """
 Rigorous benchmark for AI models as [OpenClaw](https://github.com/openclaw/openclaw) agents.
 Submit a model below and it will be evaluated on HF infrastructure.
 
-**Benchmark axes**: Completion | Trajectory | Behavior | Reliability
-**Primary metric**: pass^k (ALL runs must succeed)
-**Additional surfaces**: Hard subset | Consensus subset | Prompt robustness | Scenario coverage | Advisory LLM judge | Median latency | Cost per pass
+**Official benchmark axes**: Completion | Trajectory | Behavior | Reliability
+**Primary metric**: pass^k
+**Side surfaces**: Hard subset | Consensus subset | Prompt robustness | Scenario coverage | Advisory LLM judge | Median latency | Cost per pass
+
+```text
+task yaml + assets
+  -> isolated workspace
+  -> optional local services
+  -> OpenClaw session(s)
+  -> transcript + tool results
+  -> completion / trajectory / behavior
+  -> repeated runs
+  -> reliability
+  -> leaderboard
+```
+
+| Suite shape | Count |
+| --- | ---: |
+| Tasks | 20 |
+| Tiers | 5 |
+| Browser tasks | 2 |
+| Multi-phase tasks | 1 |
+| Judge-enabled tasks | 6 |
 """
 
 with gr.Blocks(title="ClawBench", theme=gr.themes.Base()) as demo:
@@ -385,6 +405,25 @@ with gr.Blocks(title="ClawBench", theme=gr.themes.Base()) as demo:
         gr.Markdown("""
 ## How ClawBench evaluates agents
 
+### Design principles
+- verify the actual work instead of trusting the transcript
+- score trajectory properties instead of one reference trace
+- keep the official score deterministic
+- reward reliability across repeated runs
+- expose coverage through tier, scenario, prompt, and subset slices
+
+### Runtime flow
+```text
+task yaml + assets
+  -> isolated workspace
+  -> optional local background services
+  -> OpenClaw agent session(s)
+  -> transcript + tool-result correlation
+  -> completion / trajectory / behavior scoring
+  -> repeated runs
+  -> reliability aggregation
+```
+
 ### Completion
 After the agent runs, we execute tests, scripts, and deterministic checks against the actual workspace and gateway state.
 We **never** trust what the agent said. We verify the work by running it.
@@ -415,6 +454,7 @@ Current formula:
 - scenario coverage mapped from a 12-domain user-query dataset
 - `clear` and `ambiguous` prompt variants for robustness slices
 - pass / partial / fail delivery buckets as a user-facing outcome view
+- weighted query-score reporting for a second aggregate view
 
 ### Advisory LLM Judge
 - optional task-level rubric checks for nuanced quality on selected high-ambiguity tasks
@@ -426,6 +466,24 @@ Current formula:
 - deterministic local services for browser tasks
 - multi-file assets with real bugs, missing tests, and migration work
 - scripted user turns and optional multi-phase fresh-session tasks
+
+### Coverage snapshot
+```text
+Tier mix
+tier1 | ###   3
+tier2 | ##### 5
+tier3 | ##### 5
+tier4 | ####  4
+tier5 | ###   3
+
+Family mix
+repo        | ###### 6
+coding      | ####   4
+multi_tool  | ###    3
+adversarial | ###    3
+browser     | ##     2
+tools       | ##     2
+```
 
 ### pass^k: Production Reliability
 | pass@1 | pass^5 | pass^8 |
