@@ -4,18 +4,15 @@
 # --- Stage 1: Build OpenClaw from source (skip canvas UI assets) ---
 FROM node:22-bookworm-slim AS gateway-build
 
-ARG OPENCLAW_REPO=https://github.com/scoootscooob/openclaw.git
-ARG OPENCLAW_REF=5682ec37fada89205821ee16a03f1e0d0948efb7
+ARG OPENCLAW_ARCHIVE=https://codeload.github.com/scoootscooob/openclaw/tar.gz/5682ec37fada89205821ee16a03f1e0d0948efb7
+ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y git python3 make g++ && rm -rf /var/lib/apt/lists/*
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN apt-get update && apt-get install -y curl python3 make g++ && rm -rf /var/lib/apt/lists/*
+RUN corepack enable
 
 WORKDIR /build
-RUN git init . && \
-    git remote add origin ${OPENCLAW_REPO} && \
-    git fetch --depth 1 origin ${OPENCLAW_REF} && \
-    git checkout FETCH_HEAD
-RUN pnpm install
+RUN curl -L "${OPENCLAW_ARCHIVE}" | tar -xz --strip-components=1
+RUN pnpm install --frozen-lockfile
 
 # Create a stub canvas bundle so tsdown doesn't fail on missing import
 RUN mkdir -p src/canvas-host/a2ui && \
@@ -30,6 +27,7 @@ RUN pnpm exec tsdown --logLevel warn && \
 # --- Stage 2: Runtime ---
 FROM node:22-bookworm-slim
 
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install -y python3 python3-pip python-is-python3 curl lsof git && \
     rm -rf /var/lib/apt/lists/*
@@ -40,7 +38,7 @@ COPY --from=gateway-build /build/package.json /openclaw/package.json
 COPY --from=gateway-build /build/extensions /openclaw/extensions
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npm install --prefix /openclaw playwright@1.59.1 && \
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --prefix /openclaw --no-save playwright@1.59.1 && \
     npx --prefix /openclaw playwright install --with-deps chromium && \
     CHROME_PATH="$(echo /ms-playwright/chromium-*/chrome-linux/chrome)" && \
     test -x "$CHROME_PATH" && \
