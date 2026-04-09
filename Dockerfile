@@ -14,7 +14,7 @@ RUN ln -s /app /openclaw
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npx -y playwright@1.59.1 install --with-deps chromium && \
-    CHROME_PATH="$(echo /ms-playwright/chromium-*/chrome-linux/chrome)" && \
+    CHROME_PATH="$(find /ms-playwright -path '*/chrome' -type f | sort | head -n 1)" && \
     test -x "$CHROME_PATH" && \
     ln -sf "$CHROME_PATH" /usr/bin/chromium
 
