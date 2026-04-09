@@ -5,21 +5,21 @@ from __future__ import annotations
 import logging
 import os
 
+from clawbench.hub import ensure_dataset_repo, resolve_dataset_repo
 from clawbench.schemas import BenchmarkResult
 
 logger = logging.getLogger(__name__)
 
-HF_DATASET_REPO = "openclaw/clawbench-results"
-
 
 async def upload_result(
     result: BenchmarkResult,
-    dataset_repo: str = HF_DATASET_REPO,
+    dataset_repo: str | None = None,
     token: str | None = None,
 ) -> str:
     hf_token = token or os.environ.get("HF_TOKEN", "")
     if not hf_token:
         raise RuntimeError("HF_TOKEN not set. Get a token at https://huggingface.co/settings/tokens")
+    resolved_repo = dataset_repo or resolve_dataset_repo(hf_token)
 
     try:
         from datasets import Dataset
@@ -139,13 +139,9 @@ async def upload_result(
 
     ds = Dataset.from_list([row])
     api = HfApi(token=hf_token)
-    try:
-        api.repo_info(repo_id=dataset_repo, repo_type="dataset")
-    except Exception:
-        api.create_repo(repo_id=dataset_repo, repo_type="dataset", private=False)
-        logger.info("Created dataset repo: %s", dataset_repo)
+    ensure_dataset_repo(api, resolved_repo)
 
-    ds.push_to_hub(dataset_repo, split="submissions", token=hf_token)
-    url = f"https://huggingface.co/datasets/{dataset_repo}"
+    ds.push_to_hub(resolved_repo, split="submissions", token=hf_token)
+    url = f"https://huggingface.co/datasets/{resolved_repo}"
     logger.info("Results uploaded to %s", url)
     return url

@@ -16,17 +16,14 @@ import datetime
 import json
 import logging
 import os
-import time
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, Field
+from clawbench.hub import dataset_repo_files, ensure_dataset_repo, resolve_dataset_repo
 
 logger = logging.getLogger(__name__)
 
-# HF Dataset repo for queue state and results
-QUEUE_DATASET = os.environ.get("CLAWBENCH_QUEUE_DATASET", "openclaw/clawbench-results")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 
 # Local fallback when HF is unavailable
@@ -71,8 +68,10 @@ class JobQueue:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
         self._lock = asyncio.Lock()
+        self._dataset_repo = resolve_dataset_repo(HF_TOKEN)
         LOCAL_QUEUE_DIR.mkdir(parents=True, exist_ok=True)
         self._load_local()
+        self._load_hub()
 
     def _load_local(self) -> None:
         """Load queue state from local disk."""
@@ -86,6 +85,36 @@ class JobQueue:
                 logger.info("Loaded %d jobs from local queue", len(self._jobs))
             except Exception as e:
                 logger.error("Failed to load local queue: %s", e)
+
+    def _load_hub(self) -> None:
+        """Best-effort queue rehydrate from HF Dataset."""
+        if not HF_TOKEN:
+            return
+        try:
+            from huggingface_hub import HfApi, hf_hub_download
+
+            api = HfApi(token=HF_TOKEN)
+            ensure_dataset_repo(api, self._dataset_repo)
+            if "queue/jobs.json" not in dataset_repo_files(api, self._dataset_repo):
+                return
+
+            jobs_path = hf_hub_download(
+                repo_id=self._dataset_repo,
+                repo_type="dataset",
+                filename="queue/jobs.json",
+                token=HF_TOKEN,
+            )
+            data = json.loads(Path(jobs_path).read_text())
+            merged = 0
+            for item in data:
+                job = Job(**item)
+                self._jobs[job.job_id] = job
+                merged += 1
+            if merged:
+                self._save_local()
+                logger.info("Loaded %d jobs from HF queue dataset", merged)
+        except Exception as e:
+            logger.info("HF queue bootstrap unavailable: %s", e)
 
     def _save_local(self) -> None:
         """Persist queue state to local disk."""
@@ -125,6 +154,7 @@ class JobQueue:
                 job.status = JobStatus.EVALUATING
                 job.started_at = _now_iso()
                 self._save_local()
+                await self._sync_to_hub()
 
     async def mark_finished(self, job_id: str, result_id: str) -> None:
         async with self._lock:
@@ -152,14 +182,16 @@ class JobQueue:
             return
         try:
             from huggingface_hub import HfApi
+
             api = HfApi(token=HF_TOKEN)
+            ensure_dataset_repo(api, self._dataset_repo)
 
             # Upload jobs.json to the dataset repo
             local_path = LOCAL_QUEUE_DIR / "jobs.json"
             api.upload_file(
                 path_or_fileobj=str(local_path),
                 path_in_repo="queue/jobs.json",
-                repo_id=QUEUE_DATASET,
+                repo_id=self._dataset_repo,
                 repo_type="dataset",
             )
         except Exception as e:

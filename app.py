@@ -7,7 +7,7 @@ It runs:
 
 All state persists via:
 - /data/ directory (HF persistent storage)
-- HF Dataset (openclaw/clawbench-results) for cross-restart persistence
+- HF Dataset (`<space-owner>/clawbench-results`) for cross-restart persistence
 """
 
 from __future__ import annotations
@@ -21,12 +21,15 @@ from pathlib import Path
 
 import gradio as gr
 import pandas as pd
+from clawbench.hub import dataset_has_submission_results, resolve_dataset_repo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("clawbench.app")
 
 RESULTS_DIR = Path("/data/results") if Path("/data").exists() else Path("data/results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+HF_DATASET_TOKEN = os.environ.get("HF_TOKEN", "")
+HF_DATASET_REPO = resolve_dataset_repo(HF_DATASET_TOKEN)
 
 # ---------------------------------------------------------------------------
 # Preset models for quick submission
@@ -90,14 +93,19 @@ def load_leaderboard() -> pd.DataFrame:
     # Load from HF Dataset
     try:
         from datasets import load_dataset
-        ds = load_dataset(
-            os.environ.get("CLAWBENCH_QUEUE_DATASET", "openclaw/clawbench-results"),
-            split="submissions",
-        )
-        for row in ds:
-            rows.append(_flatten_result(row))
-    except Exception:
-        pass
+        from huggingface_hub import HfApi
+
+        api = HfApi(token=HF_DATASET_TOKEN or None)
+        if dataset_has_submission_results(api, HF_DATASET_REPO):
+            ds = load_dataset(
+                HF_DATASET_REPO,
+                split="submissions",
+                token=HF_DATASET_TOKEN or None,
+            )
+            for row in ds:
+                rows.append(_flatten_result(row))
+    except Exception as exc:
+        logger.info("Remote leaderboard unavailable: %s", exc)
 
     # Load from local results
     if RESULTS_DIR.exists():
