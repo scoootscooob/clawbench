@@ -147,6 +147,25 @@ class JobQueue:
     async def list_pending(self) -> list[Job]:
         return [j for j in self._jobs.values() if j.status == JobStatus.PENDING]
 
+    async def claim_pending(self, limit: int = 1) -> list[Job]:
+        """Atomically claim up to ``limit`` pending jobs for evaluation."""
+        if limit <= 0:
+            return []
+        async with self._lock:
+            claimed: list[Job] = []
+            pending = sorted(
+                (job for job in self._jobs.values() if job.status == JobStatus.PENDING),
+                key=lambda job: job.submitted_at,
+            )
+            for job in pending[:limit]:
+                job.status = JobStatus.EVALUATING
+                job.started_at = _now_iso()
+                claimed.append(job)
+            if claimed:
+                self._save_local()
+                await self._sync_to_hub()
+            return claimed
+
     async def mark_evaluating(self, job_id: str) -> None:
         async with self._lock:
             job = self._jobs.get(job_id)

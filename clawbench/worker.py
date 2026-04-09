@@ -13,7 +13,7 @@ from pathlib import Path
 
 from clawbench.client import GatewayClient, GatewayConfig
 from clawbench.harness import BenchmarkHarness
-from clawbench.queue import JobQueue
+from clawbench.queue import JobQueue, JobStatus
 from clawbench.schemas import TaskDefinition
 from clawbench.tasks import load_all_tasks
 
@@ -25,6 +25,7 @@ GATEWAY_TOKEN = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "clawbench-internal-tok
 GATEWAY_WS_URL = f"ws://localhost:{GATEWAY_PORT}"
 GATEWAY_PORT_SPACING = max(20, int(os.environ.get("CLAWBENCH_GATEWAY_PORT_SPACING", "20")))
 PARALLEL_LANE_ROOT = Path(os.environ.get("CLAWBENCH_PARALLEL_LANE_ROOT", "/tmp/clawbench-lanes"))
+MAX_CONCURRENT_JOBS = max(1, min(8, int(os.environ.get("CLAWBENCH_MAX_CONCURRENT_JOBS", "1"))))
 POLL_INTERVAL = 10
 
 
@@ -54,16 +55,28 @@ class EvalWorker:
         self._parallel_gateway_processes: dict[int, subprocess.Popen] = {}
         self._running = False
         self._active_model = ""
+        self._in_flight_jobs: dict[str, asyncio.Task] = {}
+        self._serial_last_task_id: str | None = None
 
     async def start(self) -> None:
         self._running = True
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        logger.info("Worker started, polling every %ss", POLL_INTERVAL)
+        logger.info(
+            "Worker started, polling every %ss (max concurrent jobs=%d)",
+            POLL_INTERVAL,
+            MAX_CONCURRENT_JOBS,
+        )
         while self._running:
             try:
-                pending = await self.queue.list_pending()
-                if pending:
-                    await self._process_job(pending[0])
+                self._reap_finished_jobs()
+                available_slots = MAX_CONCURRENT_JOBS - len(self._in_flight_jobs)
+                if available_slots > 0:
+                    claimed = await self.queue.claim_pending(available_slots)
+                    for job in claimed:
+                        self._in_flight_jobs[job.job_id] = asyncio.create_task(self._process_job(job))
+
+                if self._in_flight_jobs:
+                    await asyncio.sleep(1)
                 else:
                     await asyncio.sleep(POLL_INTERVAL)
             except Exception as exc:
@@ -72,13 +85,15 @@ class EvalWorker:
 
     async def stop(self) -> None:
         self._running = False
+        self._reap_finished_jobs()
         self._stop_gateway()
         self._stop_parallel_gateways()
 
     async def _process_job(self, job) -> None:
         logger.info("Processing job %s: model=%s", job.job_id, job.request.model)
-        await self.queue.mark_evaluating(job.job_id)
         try:
+            if getattr(job, "status", None) != JobStatus.EVALUATING:
+                await self.queue.mark_evaluating(job.job_id)
             self.set_active_model(job.request.model)
             requested_parallel_lanes = max(1, int(getattr(job.request, "max_parallel_lanes", 1) or 1))
             if requested_parallel_lanes > 1:
@@ -112,6 +127,7 @@ class EvalWorker:
             self._stop_gateway()
             self._stop_parallel_gateways()
             self._active_model = ""
+            self._serial_last_task_id = None
 
     async def _run_serial_benchmark(self, job) -> object:
         self._stop_gateway()
@@ -219,15 +235,19 @@ class EvalWorker:
         await self._preflight_browser_support_for_tasks(lane.tasks, gateway_config=lane.gateway_config)
 
         async def prepare_run(task: TaskDefinition, run_index: int) -> None:
-            logger.info(
-                "Resetting lane %d gateway before %s run %d",
-                lane.index + 1,
-                task.id,
-                run_index + 1,
-            )
-            self._stop_parallel_gateway(lane)
-            await self._ensure_parallel_gateway(lane, gateway_cmd)
+            nonlocal last_task_id
+            if self._should_restart_gateway_for_run(task, run_index, last_task_id):
+                logger.info(
+                    "Resetting lane %d gateway before %s run %d",
+                    lane.index + 1,
+                    task.id,
+                    run_index + 1,
+                )
+                self._stop_parallel_gateway(lane)
+                await self._ensure_parallel_gateway(lane, gateway_cmd)
+            last_task_id = task.id
 
+        last_task_id: str | None = None
         harness = BenchmarkHarness(
             gateway_config=lane.gateway_config,
             model=job.request.model,
@@ -524,12 +544,38 @@ class EvalWorker:
         )
 
     async def _prepare_benchmark_run(self, task, run_index: int) -> None:
-        logger.info("Resetting gateway before %s run %d", task.id, run_index + 1)
-        self._stop_gateway()
-        await self._ensure_gateway()
+        if self._should_restart_gateway_for_run(task, run_index, self._serial_last_task_id):
+            logger.info("Resetting gateway before %s run %d", task.id, run_index + 1)
+            self._stop_gateway()
+            await self._ensure_gateway()
+        self._serial_last_task_id = task.id
 
     def set_active_model(self, model: str) -> None:
         self._active_model = model.strip()
+
+    def _should_restart_gateway_for_run(self, task, run_index: int, last_task_id: str | None) -> bool:
+        if last_task_id is None:
+            return run_index > 0 and self._task_requires_fresh_gateway_per_run(task)
+        if task.id != last_task_id:
+            return True
+        return self._task_requires_fresh_gateway_per_run(task)
+
+    def _task_requires_fresh_gateway_per_run(self, task) -> bool:
+        family = getattr(getattr(task, "family", None), "value", "")
+        if family == "browser":
+            return True
+        capabilities = {
+            getattr(capability, "value", str(capability))
+            for capability in getattr(task, "capabilities", [])
+        }
+        if capabilities.intersection({"automation", "delegation", "memory_continuation"}):
+            return True
+        return len(task.normalized_phases()) > 1
+
+    def _reap_finished_jobs(self) -> None:
+        for job_id, task in list(self._in_flight_jobs.items()):
+            if task.done():
+                self._in_flight_jobs.pop(job_id, None)
 
     def _configure_browser_runtime(self, gateway_cmd: list[str], gateway_env: dict[str, str]) -> None:
         # Container browser tasks need headless + no-sandbox for reliable Chromium startup.

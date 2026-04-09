@@ -103,3 +103,50 @@ async def test_mark_evaluating_syncs_to_hub(monkeypatch):
     assert queue._jobs["job-1"].started_at is not None
     assert save_calls == ["saved"]
     assert sync_calls == ["synced"]
+
+
+@pytest.mark.asyncio
+async def test_claim_pending_marks_multiple_jobs_evaluating(monkeypatch):
+    queue = JobQueue()
+    queue._jobs = {
+        "job-1": Job(
+            job_id="job-1",
+            status=JobStatus.PENDING,
+            submitted_at="2026-04-09T00:00:01+00:00",
+            request=SubmissionRequest(model="anthropic/claude-sonnet-4-6"),
+        ),
+        "job-2": Job(
+            job_id="job-2",
+            status=JobStatus.PENDING,
+            submitted_at="2026-04-09T00:00:02+00:00",
+            request=SubmissionRequest(model="huggingface/Qwen/Qwen3-32B"),
+        ),
+        "job-3": Job(
+            job_id="job-3",
+            status=JobStatus.FINISHED,
+            submitted_at="2026-04-09T00:00:03+00:00",
+            request=SubmissionRequest(model="huggingface/zai-org/GLM-5"),
+        ),
+    }
+    save_calls: list[str] = []
+    sync_calls: list[str] = []
+
+    def fake_save_local() -> None:
+        save_calls.append("saved")
+
+    async def fake_sync() -> None:
+        sync_calls.append("synced")
+
+    monkeypatch.setattr(queue, "_save_local", fake_save_local)
+    monkeypatch.setattr(queue, "_sync_to_hub", fake_sync)
+
+    claimed = await queue.claim_pending(limit=2)
+
+    assert [job.job_id for job in claimed] == ["job-1", "job-2"]
+    assert queue._jobs["job-1"].status == JobStatus.EVALUATING
+    assert queue._jobs["job-2"].status == JobStatus.EVALUATING
+    assert queue._jobs["job-3"].status == JobStatus.FINISHED
+    assert queue._jobs["job-1"].started_at is not None
+    assert queue._jobs["job-2"].started_at is not None
+    assert save_calls == ["saved"]
+    assert sync_calls == ["synced"]

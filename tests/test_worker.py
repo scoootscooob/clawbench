@@ -8,11 +8,19 @@ from clawbench.worker import GATEWAY_PORT, GATEWAY_PORT_SPACING, EvalWorker, Par
 
 
 class DummyTask:
-    def __init__(self, task_id: str, tier: str, family: str, phases: int = 1) -> None:
+    def __init__(
+        self,
+        task_id: str,
+        tier: str,
+        family: str,
+        phases: int = 1,
+        capabilities: list[str] | None = None,
+    ) -> None:
         self.id = task_id
         self.tier = SimpleNamespace(value=tier)
         self.family = SimpleNamespace(value=family)
         self._phases = phases
+        self.capabilities = [SimpleNamespace(value=value) for value in (capabilities or [])]
 
     def normalized_phases(self):
         return [object()] * self._phases
@@ -68,7 +76,7 @@ def test_configure_browser_runtime_pins_subagents_to_active_model(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_prepare_benchmark_run_restarts_gateway(monkeypatch):
+async def test_prepare_benchmark_run_restarts_gateway_on_task_boundary(monkeypatch):
     worker = EvalWorker(JobQueue())
     calls: list[str] = []
 
@@ -81,10 +89,38 @@ async def test_prepare_benchmark_run_restarts_gateway(monkeypatch):
     monkeypatch.setattr(worker, "_stop_gateway", fake_stop_gateway)
     monkeypatch.setattr(worker, "_ensure_gateway", fake_ensure_gateway)
 
-    class Task:
-        id = "t1-bugfix-discount"
+    task = DummyTask("t1-bugfix-discount", "tier1", "coding")
 
-    await worker._prepare_benchmark_run(Task(), 0)
+    await worker._prepare_benchmark_run(task, 0)
+    await worker._prepare_benchmark_run(task, 1)
+    await worker._prepare_benchmark_run(DummyTask("t1-refactor-csv-loader", "tier1", "coding"), 0)
+
+    assert calls == ["stop", "ensure"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_benchmark_run_restarts_each_run_for_automation(monkeypatch):
+    worker = EvalWorker(JobQueue())
+    calls: list[str] = []
+
+    def fake_stop_gateway() -> None:
+        calls.append("stop")
+
+    async def fake_ensure_gateway() -> None:
+        calls.append("ensure")
+
+    monkeypatch.setattr(worker, "_stop_gateway", fake_stop_gateway)
+    monkeypatch.setattr(worker, "_ensure_gateway", fake_ensure_gateway)
+
+    task = DummyTask(
+        "t3-monitoring-automation",
+        "tier3",
+        "tools",
+        capabilities=["automation"],
+    )
+
+    await worker._prepare_benchmark_run(task, 0)
+    await worker._prepare_benchmark_run(task, 1)
 
     assert calls == ["stop", "ensure"]
 
