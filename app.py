@@ -31,6 +31,22 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 HF_DATASET_TOKEN = os.environ.get("HF_TOKEN", "")
 HF_DATASET_REPO = resolve_dataset_repo(HF_DATASET_TOKEN)
 
+
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default %s", name, raw, default)
+        return default
+    return max(minimum, min(maximum, value))
+
+
+DEFAULT_RUNS_PER_TASK = _env_int("CLAWBENCH_DEFAULT_RUNS_PER_TASK", 3, minimum=1, maximum=10)
+DEFAULT_PARALLEL_LANES = _env_int("CLAWBENCH_DEFAULT_PARALLEL_LANES", 1, minimum=1, maximum=4)
+
 # ---------------------------------------------------------------------------
 # Preset models for quick submission
 # ---------------------------------------------------------------------------
@@ -343,13 +359,13 @@ with gr.Blocks(title="ClawBench", theme=gr.themes.Base()) as demo:
         )
         with gr.Row():
             runs_input = gr.Slider(
-                minimum=1, maximum=10, value=3, step=1,
+                minimum=1, maximum=10, value=DEFAULT_RUNS_PER_TASK, step=1,
                 label="Runs per task (higher = more reliable pass^k)",
             )
             max_parallel_lanes_input = gr.Slider(
                 minimum=1,
                 maximum=4,
-                value=1,
+                value=DEFAULT_PARALLEL_LANES,
                 step=1,
                 label="Parallel lanes (browser tasks stay serialized on one lane)",
             )
