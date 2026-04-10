@@ -284,45 +284,630 @@ def submit_all_presets(runs: int, max_parallel_lanes: int, submitter: str) -> st
 
 
 # ---------------------------------------------------------------------------
+# Theme + CSS — matched to OpenClaw WebUI & ClawHub design system
+# ---------------------------------------------------------------------------
+
+CUSTOM_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+    /* Background — deep, rich dark with layered depth (from WebUI base.css) */
+    --bg: #0e1015;
+    --bg-accent: #13151b;
+    --bg-elevated: #191c24;
+    --bg-hover: #1f2330;
+
+    /* Card / Surface */
+    --card: #161920;
+    --card-foreground: #f0f0f2;
+
+    /* Text — clean contrast */
+    --text: #d4d4d8;
+    --text-strong: #f4f4f5;
+    --muted: #838387;
+    --muted-strong: #75757d;
+
+    /* Border — whisper-thin, barely there */
+    --border: #1e2028;
+    --border-strong: #2e3040;
+    --border-hover: #3e4050;
+
+    /* Accent — punchy signature red (from WebUI) */
+    --accent: #ff5c5c;
+    --accent-hover: #ff7070;
+    --accent-subtle: rgba(255, 92, 92, 0.1);
+    --accent-glow: rgba(255, 92, 92, 0.2);
+
+    /* Secondary accent — teal (from WebUI) */
+    --accent-2: #14b8a6;
+    --accent-2-subtle: rgba(20, 184, 166, 0.1);
+
+    /* Semantic */
+    --ok: #22c55e;
+    --ok-subtle: rgba(34, 197, 94, 0.08);
+    --warn: #f59e0b;
+    --warn-subtle: rgba(245, 158, 11, 0.08);
+
+    /* Typography */
+    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    /* Shadows — subtle, layered depth */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.3);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.4);
+
+    /* Radii */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+
+    /* Transitions */
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --duration-fast: 100ms;
+    --duration-normal: 180ms;
+}
+
+/* ── Global ──────────────────────────────────────────── */
+
+.gradio-container {
+    background: var(--bg) !important;
+    font-family: var(--font-body) !important;
+    max-width: 1200px !important;
+    margin: 0 auto !important;
+    color: var(--text) !important;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+.main, .contain {
+    background: var(--bg) !important;
+}
+
+footer { display: none !important; }
+
+/* ── Hero ────────────────────────────────────────────── */
+
+#hero-block {
+    background: var(--bg-accent) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-lg) !important;
+    padding: 36px 40px 32px !important;
+    margin-bottom: 6px !important;
+    position: relative;
+    overflow: hidden;
+}
+
+#hero-block::before {
+    content: '';
+    position: absolute;
+    top: -40%;
+    left: -15%;
+    width: 55%;
+    height: 180%;
+    background: radial-gradient(ellipse, rgba(255,92,92,0.04) 0%, transparent 65%);
+    pointer-events: none;
+}
+
+#hero-block h1 {
+    font-family: var(--font-body) !important;
+    font-size: 1.9rem !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.03em !important;
+    color: var(--text-strong) !important;
+    margin: 0 0 8px 0 !important;
+    line-height: 1.15 !important;
+}
+
+#hero-block .accent { color: var(--accent) !important; }
+
+#hero-block p {
+    color: var(--muted) !important;
+    font-size: 0.9rem !important;
+    line-height: 1.6 !important;
+    margin: 0 !important;
+}
+
+#hero-block p a {
+    color: var(--accent) !important;
+    text-decoration: underline !important;
+    text-underline-offset: 2px !important;
+    text-decoration-color: rgba(255,92,92,0.35) !important;
+}
+
+#hero-block p a:hover {
+    text-decoration-thickness: 2px !important;
+}
+
+#hero-block p strong {
+    color: var(--text) !important;
+    font-weight: 600 !important;
+}
+
+/* ── Stat pills ──────────────────────────────────────── */
+
+#stat-row {
+    padding: 0 !important;
+    margin-bottom: 10px !important;
+    gap: 8px !important;
+    background: transparent !important;
+    border: none !important;
+}
+
+#stat-row > div {
+    background: transparent !important;
+    border: none !important;
+}
+
+.stat-pill {
+    background: var(--card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-md) !important;
+    padding: 12px 16px !important;
+}
+
+.stat-pill .label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    font-weight: 600;
+    color: var(--muted);
+    font-family: var(--font-body);
+}
+
+.stat-pill .value {
+    font-family: var(--font-mono);
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: var(--text-strong);
+    margin-top: 2px;
+}
+
+.stat-pill .value.accent { color: var(--accent); }
+.stat-pill .value.teal { color: var(--accent-2); }
+
+/* ── Tabs — pill switcher (matches WebUI topbar-theme-mode pattern) ── */
+
+.tabs {
+    background: transparent !important;
+    border: none !important;
+}
+
+.tab-nav {
+    background: color-mix(in srgb, var(--bg-elevated) 88%, transparent) !important;
+    border: 1px solid color-mix(in srgb, var(--border) 84%, transparent) !important;
+    border-radius: 9999px !important;
+    padding: 3px !important;
+    gap: 2px !important;
+    margin-bottom: 14px !important;
+    display: inline-flex !important;
+}
+
+.tab-nav button {
+    font-family: var(--font-body) !important;
+    font-weight: 600 !important;
+    font-size: 0.82rem !important;
+    color: var(--muted) !important;
+    background: transparent !important;
+    border: 1px solid transparent !important;
+    border-radius: 9999px !important;
+    padding: 8px 18px !important;
+    transition: color var(--duration-fast) ease,
+                background var(--duration-fast) ease,
+                border-color var(--duration-fast) ease !important;
+}
+
+.tab-nav button:hover {
+    color: var(--text) !important;
+    background: var(--bg-hover) !important;
+}
+
+.tab-nav button.selected {
+    color: var(--text-strong) !important;
+    background: color-mix(in srgb, var(--accent-subtle) 88%, var(--bg-elevated) 12%) !important;
+    border-color: color-mix(in srgb, var(--accent) 18%, transparent) !important;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, white 10%, transparent) !important;
+}
+
+.tabitem {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+}
+
+/* ── Dataframe / table ───────────────────────────────── */
+
+.dataframe, .table-wrap, .svelte-1gfkn6j {
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-md) !important;
+    overflow: hidden !important;
+    background: var(--card) !important;
+}
+
+table {
+    font-family: var(--font-mono) !important;
+    font-size: 0.78rem !important;
+    border-collapse: separate !important;
+    border-spacing: 0 !important;
+    width: 100% !important;
+}
+
+table thead tr {
+    background: var(--bg-elevated) !important;
+}
+
+table thead th {
+    color: color-mix(in srgb, var(--muted) 72%, var(--text) 28%) !important;
+    font-weight: 700 !important;
+    font-size: 0.65rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.06em !important;
+    padding: 11px 12px !important;
+    border-bottom: 1px solid var(--border) !important;
+    white-space: nowrap !important;
+    background: var(--bg-elevated) !important;
+}
+
+table tbody tr {
+    transition: background var(--duration-fast) ease !important;
+}
+
+table tbody tr:hover {
+    background: color-mix(in srgb, var(--bg-hover) 84%, transparent) !important;
+}
+
+table tbody td {
+    color: var(--text) !important;
+    padding: 9px 12px !important;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent) !important;
+    white-space: nowrap !important;
+}
+
+table tbody tr:last-child td {
+    border-bottom: none !important;
+}
+
+/* ── Buttons (matches WebUI .btn pattern) ────────────── */
+
+.primary.svelte-cmf5ev, button.primary {
+    background: var(--accent) !important;
+    border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent) !important;
+    color: #fff !important;
+    font-family: var(--font-body) !important;
+    font-weight: 600 !important;
+    font-size: 0.85rem !important;
+    border-radius: var(--radius-md) !important;
+    padding: 9px 20px !important;
+    transition: background var(--duration-fast) ease,
+                border-color var(--duration-fast) ease,
+                transform var(--duration-fast) ease !important;
+    box-shadow: var(--shadow-sm) !important;
+}
+
+.primary.svelte-cmf5ev:hover, button.primary:hover {
+    background: var(--accent-hover) !important;
+    transform: translateY(-1px) !important;
+    box-shadow: 0 0 24px var(--accent-glow) !important;
+}
+
+.secondary.svelte-cmf5ev, button.secondary {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border) !important;
+    color: var(--muted) !important;
+    font-family: var(--font-body) !important;
+    font-weight: 500 !important;
+    font-size: 0.85rem !important;
+    border-radius: var(--radius-md) !important;
+    padding: 9px 20px !important;
+    transition: background var(--duration-fast) ease,
+                border-color var(--duration-fast) ease,
+                color var(--duration-fast) ease !important;
+}
+
+.secondary.svelte-cmf5ev:hover, button.secondary:hover {
+    border-color: var(--border-strong) !important;
+    color: var(--text) !important;
+    background: var(--bg-hover) !important;
+}
+
+button[variant="stop"] {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-md) !important;
+}
+
+.refresh-btn {
+    max-width: 110px !important;
+}
+
+/* ── Inputs (matches WebUI input pattern) ────────────── */
+
+.block, .form {
+    background: transparent !important;
+    border: none !important;
+}
+
+input[type="text"], textarea, .wrap.svelte-1gfkn6j {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-md) !important;
+    color: var(--text) !important;
+    font-family: var(--font-body) !important;
+    font-size: 0.88rem !important;
+    padding: 9px 12px !important;
+    transition: border-color var(--duration-fast) ease !important;
+}
+
+input[type="text"]:focus, textarea:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent) !important;
+    outline: none !important;
+}
+
+label, .label-wrap span {
+    color: var(--muted) !important;
+    font-family: var(--font-body) !important;
+    font-weight: 500 !important;
+    font-size: 0.82rem !important;
+}
+
+/* Dropdown */
+.wrap.svelte-1gfkn6j, .secondary-wrap {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-md) !important;
+}
+
+/* Slider */
+input[type="range"] {
+    accent-color: var(--accent) !important;
+}
+
+/* ── Markdown ────────────────────────────────────────── */
+
+.prose, .markdown-text, .md {
+    color: var(--text) !important;
+    font-family: var(--font-body) !important;
+}
+
+.prose h2, .prose h3, .md h2, .md h3 {
+    font-family: var(--font-body) !important;
+    color: var(--text-strong) !important;
+    font-weight: 650 !important;
+    letter-spacing: -0.02em !important;
+}
+
+.prose h2, .md h2 {
+    font-size: 1.25rem !important;
+    padding-bottom: 10px !important;
+    border-bottom: 1px solid var(--border) !important;
+    margin-bottom: 16px !important;
+}
+
+.prose h3, .md h3 {
+    font-size: 1rem !important;
+    color: var(--accent) !important;
+    margin-top: 24px !important;
+}
+
+.prose code, .md code {
+    font-family: var(--font-mono) !important;
+    background: var(--bg-elevated) !important;
+    color: var(--accent) !important;
+    padding: 2px 6px !important;
+    border-radius: var(--radius-sm) !important;
+    font-size: 0.8rem !important;
+    border: 1px solid var(--border) !important;
+}
+
+.prose pre, .md pre {
+    background: var(--bg-accent) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-md) !important;
+    padding: 16px 20px !important;
+    overflow-x: auto;
+}
+
+.prose pre code, .md pre code {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    color: var(--muted) !important;
+    font-size: 0.78rem !important;
+    line-height: 1.65 !important;
+}
+
+/* Markdown tables */
+.prose table, .md table {
+    border-collapse: collapse !important;
+    margin: 14px 0 !important;
+    font-family: var(--font-mono) !important;
+    font-size: 0.78rem !important;
+}
+
+.prose table th, .md table th {
+    background: var(--bg-elevated) !important;
+    color: color-mix(in srgb, var(--muted) 72%, var(--text) 28%) !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    font-size: 0.65rem !important;
+    letter-spacing: 0.06em !important;
+    padding: 9px 14px !important;
+    border: 1px solid var(--border) !important;
+}
+
+.prose table td, .md table td {
+    padding: 8px 14px !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text) !important;
+}
+
+.prose table tr:hover td, .md table tr:hover td {
+    background: color-mix(in srgb, var(--bg-hover) 60%, transparent) !important;
+}
+
+.prose strong, .md strong {
+    color: var(--text-strong) !important;
+    font-weight: 600 !important;
+}
+
+.prose a, .md a {
+    color: var(--accent) !important;
+    text-decoration: underline !important;
+    text-underline-offset: 2px !important;
+    text-decoration-color: rgba(255,92,92,0.35) !important;
+}
+
+.prose a:hover, .md a:hover {
+    text-decoration-thickness: 2px !important;
+}
+
+.prose ul, .md ul {
+    color: var(--text) !important;
+}
+
+.prose li, .md li {
+    line-height: 1.65 !important;
+}
+
+/* ── Status output ───────────────────────────────────── */
+
+.output-textbox textarea {
+    background: var(--bg-accent) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-md) !important;
+    color: var(--ok) !important;
+    font-family: var(--font-mono) !important;
+    font-size: 0.8rem !important;
+}
+
+/* ── Scrollbar (from WebUI base.css) ─────────────────── */
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.14);
+}
+
+/* ── Animations (from WebUI) ─────────────────────────── */
+
+@keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+#hero-block { animation: rise 0.3s var(--ease-out); }
+#stat-row { animation: rise 0.3s var(--ease-out) 0.05s both; }
+.tabs { animation: rise 0.3s var(--ease-out) 0.1s both; }
+"""
+
+clawbench_theme = gr.themes.Base(
+    primary_hue=gr.themes.colors.red,
+    secondary_hue=gr.themes.colors.gray,
+    neutral_hue=gr.themes.colors.gray,
+    font=gr.themes.GoogleFont("Inter"),
+    font_mono=gr.themes.GoogleFont("JetBrains Mono"),
+).set(
+    body_background_fill="#0e1015",
+    body_background_fill_dark="#0e1015",
+    body_text_color="#d4d4d8",
+    body_text_color_dark="#d4d4d8",
+    body_text_color_subdued="#838387",
+    body_text_color_subdued_dark="#838387",
+    background_fill_primary="#13151b",
+    background_fill_primary_dark="#13151b",
+    background_fill_secondary="#191c24",
+    background_fill_secondary_dark="#191c24",
+    border_color_primary="#1e2028",
+    border_color_primary_dark="#1e2028",
+    block_background_fill="#161920",
+    block_background_fill_dark="#161920",
+    block_border_color="#1e2028",
+    block_border_color_dark="#1e2028",
+    block_label_background_fill="#191c24",
+    block_label_background_fill_dark="#191c24",
+    block_label_text_color="#838387",
+    block_label_text_color_dark="#838387",
+    block_title_text_color="#d4d4d8",
+    block_title_text_color_dark="#d4d4d8",
+    input_background_fill="#191c24",
+    input_background_fill_dark="#191c24",
+    input_border_color="#1e2028",
+    input_border_color_dark="#1e2028",
+    input_border_color_focus="#ff5c5c",
+    input_border_color_focus_dark="#ff5c5c",
+    button_primary_background_fill="#ff5c5c",
+    button_primary_background_fill_dark="#ff5c5c",
+    button_primary_border_color="rgba(255,92,92,0.4)",
+    button_primary_border_color_dark="rgba(255,92,92,0.4)",
+    button_primary_text_color="#ffffff",
+    button_primary_text_color_dark="#ffffff",
+    button_secondary_background_fill="#191c24",
+    button_secondary_background_fill_dark="#191c24",
+    button_secondary_border_color="#1e2028",
+    button_secondary_border_color_dark="#1e2028",
+    button_secondary_text_color="#838387",
+    button_secondary_text_color_dark="#838387",
+    block_radius="10px",
+    radius_size="10px",
+    shadow_drop="none",
+    shadow_spread="none",
+)
+
+
+# ---------------------------------------------------------------------------
 # Gradio app
 # ---------------------------------------------------------------------------
 
-DESCRIPTION = """
-# ClawBench
-
-Rigorous benchmark for AI models as [OpenClaw](https://github.com/openclaw/openclaw) agents.
-Submit a model below and it will be evaluated on HF infrastructure.
-
-**Official benchmark axes**: Completion | Trajectory | Behavior | Reliability
-**Primary metric**: pass^k
-**Side surfaces**: Hard subset | Consensus subset | Prompt robustness | Scenario coverage | Advisory LLM judge | Median latency | Cost per pass
-
-```text
-task yaml + assets
-  -> isolated workspace
-  -> optional local services
-  -> OpenClaw session(s)
-  -> transcript + tool results
-  -> completion / trajectory / behavior
-  -> repeated runs
-  -> reliability
-  -> leaderboard
-```
-
-| Suite shape | Count |
-| --- | ---: |
-| Tasks | 20 |
-| Tiers | 5 |
-| Browser tasks | 2 |
-| Multi-phase tasks | 1 |
-| Judge-enabled tasks | 6 |
+HERO_HTML = """
+<h1>Claw<span class="accent">Bench</span></h1>
+<p>
+Rigorous benchmark for AI models as <a href="https://github.com/openclaw/openclaw" target="_blank">OpenClaw</a> agents.
+Submit a model and it will be evaluated on HF infrastructure.<br>
+<strong>Axes</strong>: Completion &middot; Trajectory &middot; Behavior &middot; Reliability
+&nbsp;&nbsp;|&nbsp;&nbsp;
+<strong>Primary</strong>: pass^k
+</p>
 """
 
-with gr.Blocks(title="ClawBench", theme=gr.themes.Base()) as demo:
-    gr.Markdown(DESCRIPTION)
+STAT_TASKS = '<div class="stat-pill"><div class="label">Tasks</div><div class="value">20</div></div>'
+STAT_TIERS = '<div class="stat-pill"><div class="label">Tiers</div><div class="value">5</div></div>'
+STAT_BROWSER = '<div class="stat-pill"><div class="label">Browser</div><div class="value accent">2</div></div>'
+STAT_JUDGE = '<div class="stat-pill"><div class="label">Judge</div><div class="value accent">6</div></div>'
+STAT_PRESETS = (
+    '<div class="stat-pill"><div class="label">Presets</div><div class="value teal">'
+    + str(len(PRESET_MODELS))
+    + "</div></div>"
+)
 
+with gr.Blocks(title="ClawBench", theme=clawbench_theme, css=CUSTOM_CSS) as demo:
+
+    # ── Hero ──
+    gr.HTML(HERO_HTML, elem_id="hero-block")
+
+    # ── Stats ribbon ──
+    with gr.Row(elem_id="stat-row", equal_height=True):
+        gr.HTML(STAT_TASKS)
+        gr.HTML(STAT_TIERS)
+        gr.HTML(STAT_BROWSER)
+        gr.HTML(STAT_JUDGE)
+        gr.HTML(STAT_PRESETS)
+
+    # ── Tabs ──
     with gr.Tab("Leaderboard"):
-        refresh_btn = gr.Button("Refresh", scale=0)
+        refresh_btn = gr.Button("Refresh", scale=0, elem_classes=["refresh-btn"])
         leaderboard = gr.Dataframe(
             value=load_leaderboard,
             interactive=False,
@@ -405,7 +990,7 @@ with gr.Blocks(title="ClawBench", theme=gr.themes.Base()) as demo:
         with gr.Row():
             submit_btn = gr.Button("Submit Model", variant="primary")
             submit_all_btn = gr.Button("Submit All Presets", variant="secondary")
-        submit_output = gr.Textbox(label="Status", interactive=False, lines=5)
+        submit_output = gr.Textbox(label="Status", interactive=False, lines=5, elem_classes=["output-textbox"])
         submit_btn.click(
             fn=submit_model,
             inputs=[
@@ -452,7 +1037,7 @@ with gr.Blocks(title="ClawBench", theme=gr.themes.Base()) as demo:
             "Heartbeat and progress fields update during long evaluations. "
             "If a job loses its lease after a restart, the worker will auto-requeue it."
         )
-        queue_refresh = gr.Button("Refresh", scale=0)
+        queue_refresh = gr.Button("Refresh", scale=0, elem_classes=["refresh-btn"])
         queue_table = gr.Dataframe(value=load_queue, interactive=False, wrap=True)
         queue_refresh.click(fn=load_queue, outputs=queue_table)
 
