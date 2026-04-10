@@ -813,58 +813,67 @@ input[type="range"] {
 .tabs { animation: rise 0.3s var(--ease-out) 0.1s both; }
 """
 
-clawbench_theme = gr.themes.Base(
-    primary_hue=gr.themes.colors.red,
-    secondary_hue=gr.themes.colors.gray,
-    neutral_hue=gr.themes.colors.gray,
-    font=gr.themes.GoogleFont("Inter"),
-    font_mono=gr.themes.GoogleFont("JetBrains Mono"),
-).set(
-    body_background_fill="#0e1015",
-    body_background_fill_dark="#0e1015",
-    body_text_color="#d4d4d8",
-    body_text_color_dark="#d4d4d8",
-    body_text_color_subdued="#838387",
-    body_text_color_subdued_dark="#838387",
-    background_fill_primary="#13151b",
-    background_fill_primary_dark="#13151b",
-    background_fill_secondary="#191c24",
-    background_fill_secondary_dark="#191c24",
-    border_color_primary="#1e2028",
-    border_color_primary_dark="#1e2028",
-    block_background_fill="#161920",
-    block_background_fill_dark="#161920",
-    block_border_color="#1e2028",
-    block_border_color_dark="#1e2028",
-    block_label_background_fill="#191c24",
-    block_label_background_fill_dark="#191c24",
-    block_label_text_color="#838387",
-    block_label_text_color_dark="#838387",
-    block_title_text_color="#d4d4d8",
-    block_title_text_color_dark="#d4d4d8",
-    input_background_fill="#191c24",
-    input_background_fill_dark="#191c24",
-    input_border_color="#1e2028",
-    input_border_color_dark="#1e2028",
-    input_border_color_focus="#ff5c5c",
-    input_border_color_focus_dark="#ff5c5c",
-    button_primary_background_fill="#ff5c5c",
-    button_primary_background_fill_dark="#ff5c5c",
-    button_primary_border_color="rgba(255,92,92,0.4)",
-    button_primary_border_color_dark="rgba(255,92,92,0.4)",
-    button_primary_text_color="#ffffff",
-    button_primary_text_color_dark="#ffffff",
-    button_secondary_background_fill="#191c24",
-    button_secondary_background_fill_dark="#191c24",
-    button_secondary_border_color="#1e2028",
-    button_secondary_border_color_dark="#1e2028",
-    button_secondary_text_color="#838387",
-    button_secondary_text_color_dark="#838387",
-    block_radius="10px",
-    radius_size="10px",
-    shadow_drop="none",
-    shadow_spread="none",
-)
+def _build_theme():
+    """Build the custom theme, falling back to plain Base() on any error.
+
+    Different Gradio versions accept different ``.set()`` kwargs; we want
+    any unknown kwarg to degrade gracefully instead of killing the Space.
+    """
+    try:
+        return gr.themes.Base(
+            primary_hue=gr.themes.colors.red,
+            secondary_hue=gr.themes.colors.gray,
+            neutral_hue=gr.themes.colors.gray,
+            font=gr.themes.GoogleFont("Inter"),
+            font_mono=gr.themes.GoogleFont("JetBrains Mono"),
+        ).set(
+            body_background_fill="#0e1015",
+            body_background_fill_dark="#0e1015",
+            body_text_color="#d4d4d8",
+            body_text_color_dark="#d4d4d8",
+            body_text_color_subdued="#838387",
+            body_text_color_subdued_dark="#838387",
+            background_fill_primary="#13151b",
+            background_fill_primary_dark="#13151b",
+            background_fill_secondary="#191c24",
+            background_fill_secondary_dark="#191c24",
+            border_color_primary="#1e2028",
+            border_color_primary_dark="#1e2028",
+            block_background_fill="#161920",
+            block_background_fill_dark="#161920",
+            block_border_color="#1e2028",
+            block_border_color_dark="#1e2028",
+            block_label_background_fill="#191c24",
+            block_label_background_fill_dark="#191c24",
+            block_label_text_color="#838387",
+            block_label_text_color_dark="#838387",
+            block_title_text_color="#d4d4d8",
+            block_title_text_color_dark="#d4d4d8",
+            input_background_fill="#191c24",
+            input_background_fill_dark="#191c24",
+            input_border_color="#1e2028",
+            input_border_color_dark="#1e2028",
+            input_border_color_focus="#ff5c5c",
+            input_border_color_focus_dark="#ff5c5c",
+            button_primary_background_fill="#ff5c5c",
+            button_primary_background_fill_dark="#ff5c5c",
+            button_primary_border_color="#ff5c5c",
+            button_primary_border_color_dark="#ff5c5c",
+            button_primary_text_color="#ffffff",
+            button_primary_text_color_dark="#ffffff",
+            button_secondary_background_fill="#191c24",
+            button_secondary_background_fill_dark="#191c24",
+            button_secondary_border_color="#1e2028",
+            button_secondary_border_color_dark="#1e2028",
+            button_secondary_text_color="#838387",
+            button_secondary_text_color_dark="#838387",
+        )
+    except Exception as exc:
+        logger.warning("Custom theme failed (%s); falling back to Base()", exc)
+        return gr.themes.Base()
+
+
+clawbench_theme = _build_theme()
 
 
 # ---------------------------------------------------------------------------
