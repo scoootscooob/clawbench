@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from clawbench.client import GatewayClient
+from clawbench.session_labels import unique_session_label
 from clawbench.schemas import (
     CompletionResult,
     JudgeExpectations,
@@ -46,7 +47,7 @@ async def judge_task_run(
     try:
         session_key = await client.create_session(
             model=judge_model,
-            label=f"clawbench-judge-{task.id}",
+            label=unique_session_label(f"clawbench-judge-{task.id}"),
         )
         await client.subscribe(session_key)
         judge_transcript = await client.send_and_wait(session_key, prompt)

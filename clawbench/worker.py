@@ -15,6 +15,7 @@ from clawbench.client import GatewayClient, GatewayConfig
 from clawbench.harness import BenchmarkHarness
 from clawbench.queue import JobQueue, JobStatus
 from clawbench.schemas import TaskDefinition
+from clawbench.session_labels import unique_session_label
 from clawbench.tasks import load_all_tasks
 
 logger = logging.getLogger(__name__)
@@ -559,7 +560,9 @@ class EvalWorker:
             return
 
         async with GatewayClient(gateway_config) as client:
-            session_key = await client.create_session(label="clawbench-browser-preflight")
+            session_key = await client.create_session(
+                label=unique_session_label("clawbench-browser-preflight")
+            )
             try:
                 payload = await client.get_effective_tools(session_key)
             finally:
@@ -815,7 +818,9 @@ class EvalWorker:
 
     async def _assert_gateway_control_plane(self, gateway_config: GatewayConfig) -> None:
         async with GatewayClient(gateway_config) as client:
-            session_key = await client.create_session(label="clawbench-startup-probe")
+            session_key = await client.create_session(
+                label=unique_session_label("clawbench-startup-probe")
+            )
             await client.delete_session(session_key)
 
     def _read_gateway_log(self) -> str:

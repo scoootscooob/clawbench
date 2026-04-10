@@ -29,6 +29,7 @@ from clawbench.schemas import (
     Transcript,
 )
 from clawbench.scorer import classify_error_failure_mode, score_task_run
+from clawbench.session_labels import unique_session_label
 from clawbench.services import build_runtime_values, start_background_services, stop_background_services
 from clawbench.simulated_user import UserSimulator
 from clawbench.stats import bootstrap_ci, summarize_task_runs
@@ -183,7 +184,9 @@ class BenchmarkHarness:
                     session_key = await client.create_session(
                         model=self.model,
                         agent_id=agent_id,
-                        label=f"clawbench-{task.id}-run{run_index}-phase{phase_index}",
+                        label=unique_session_label(
+                            f"clawbench-{task.id}-run{run_index}-phase{phase_index}"
+                        ),
                     )
                     session_keys.append(session_key)
                     await client.subscribe(session_key)
