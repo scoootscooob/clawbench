@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,51 +30,49 @@ class DummyTask:
 
 def test_configure_browser_runtime_sets_benchmark_safe_openclaw_config(monkeypatch):
     worker = EvalWorker(JobQueue())
-    calls: list[list[str]] = []
+    state_dir = Path("/tmp/test-openclaw-config-basic")
+    if state_dir.exists():
+        import shutil
 
-    def fake_run(cmd, **kwargs):
-        calls.append(list(cmd))
-
-        class Result:
-            returncode = 0
-
-        return Result()
-
-    monkeypatch.setattr("subprocess.run", fake_run)
+        shutil.rmtree(state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    config_path = state_dir / "openclaw.json"
+    config_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", str(state_dir))
 
     worker._configure_browser_runtime(["node", "/openclaw/dist/cli.js"], {"HOME": "/tmp/home"})
 
-    assert calls == [
-        ["node", "/openclaw/dist/cli.js", "config", "set", "agents.defaults.skipBootstrap", "true"],
-        ["node", "/openclaw/dist/cli.js", "config", "set", "browser.headless", "true"],
-        ["node", "/openclaw/dist/cli.js", "config", "set", "browser.noSandbox", "true"],
-    ]
+    assert json.loads(config_path.read_text(encoding="utf-8")) == {
+        "agents": {"defaults": {"skipBootstrap": True}},
+        "browser": {"headless": True, "noSandbox": True},
+    }
 
 
 def test_configure_browser_runtime_pins_subagents_to_active_model(monkeypatch):
     worker = EvalWorker(JobQueue())
     worker.set_active_model("openai-codex/gpt-5.4")
-    calls: list[list[str]] = []
+    state_dir = Path("/tmp/test-openclaw-config-model")
+    if state_dir.exists():
+        import shutil
 
-    def fake_run(cmd, **kwargs):
-        calls.append(list(cmd))
-
-        class Result:
-            returncode = 0
-
-        return Result()
-
-    monkeypatch.setattr("subprocess.run", fake_run)
+        shutil.rmtree(state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    config_path = state_dir / "openclaw.json"
+    config_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", str(state_dir))
 
     worker._configure_browser_runtime(["node", "/openclaw/dist/cli.js"], {"HOME": "/tmp/home"})
 
-    assert calls == [
-        ["node", "/openclaw/dist/cli.js", "config", "set", "agents.defaults.skipBootstrap", "true"],
-        ["node", "/openclaw/dist/cli.js", "config", "set", "browser.headless", "true"],
-        ["node", "/openclaw/dist/cli.js", "config", "set", "browser.noSandbox", "true"],
-        ["node", "/openclaw/dist/cli.js", "config", "set", "agents.defaults.model.primary", "openai-codex/gpt-5.4"],
-        ["node", "/openclaw/dist/cli.js", "config", "set", "agents.defaults.subagents.model.primary", "openai-codex/gpt-5.4"],
-    ]
+    assert json.loads(config_path.read_text(encoding="utf-8")) == {
+        "agents": {
+            "defaults": {
+                "skipBootstrap": True,
+                "model": {"primary": "openai-codex/gpt-5.4"},
+                "subagents": {"model": {"primary": "openai-codex/gpt-5.4"}},
+            }
+        },
+        "browser": {"headless": True, "noSandbox": True},
+    }
 
 
 @pytest.mark.asyncio

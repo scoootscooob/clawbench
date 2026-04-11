@@ -243,13 +243,62 @@ class BenchmarkHarness:
             console.print(f"    [red]! {failure}[/]")
 
     async def _run_single(self, task: TaskDefinition, run_index: int) -> TaskRunResult:
+        # Per-turn timeout cap: prevents a single send_and_wait from burning the entire task
+        # timeout (often 300-600s). Default 180s is enough for any reasonable single-turn
+        # response and fails fast on stuck models. Override with env var if needed.
+        per_turn_cap = float(os.environ.get("CLAWBENCH_PER_TURN_TIMEOUT_SECONDS", "180"))
+        # Per-run hard budget: total wall time a single (task, run) is allowed to consume.
+        # Default 300s (5 min) bounds the worst case to 5min * 120 = 10h/model if fully
+        # serial, and <3h/model at lanes=4. Env override available for longer slower models.
+        per_run_budget = float(os.environ.get("CLAWBENCH_PER_RUN_BUDGET_SECONDS", "300"))
+
+        # Per-run result cache: allows a failed job to resume from previously completed
+        # (task, run) pairs on resubmit. Keyed by model + task + run_index so the same
+        # model's runs are reused, but different models stay isolated. The cache is
+        # written AFTER successful score_task_run and read at the start of this method.
+        # Set CLAWBENCH_RUN_CACHE_DIR="" to disable.
+        cache_dir_env = os.environ.get("CLAWBENCH_RUN_CACHE_DIR", "/data/run_cache")
+        cache_path: Path | None = None
+        if cache_dir_env:
+            safe_model = self.model.replace("/", "_").replace(":", "_")
+            cache_path = Path(cache_dir_env) / safe_model / task.id / f"run{run_index}.json"
+            if cache_path.exists():
+                try:
+                    cached = TaskRunResult.model_validate_json(cache_path.read_text(encoding="utf-8"))
+                    cached.run_index = run_index
+                    logger.info(
+                        "TIMING %s/run%s total=cached score=%.2f C=%.2f T=%.2f B=%.2f J=%.2f  (resumed from %s)",
+                        task.id, run_index,
+                        cached.run_score,
+                        cached.completion_result.score,
+                        cached.trajectory_result.score,
+                        cached.behavior_result.score,
+                        cached.judge_result.score if cached.judge_result.enabled else 0.0,
+                        cache_path,
+                    )
+                    return cached
+                except Exception as exc:
+                    logger.warning("Cache load failed for %s/run%s: %s (will re-run)", task.id, run_index, exc)
+
         workspace = self._create_run_workspace(task, run_index)
         services = []
         session_keys: list[str] = []
         agent_id: str | None = None
 
+        # Per-phase timings so we can see where slow runs are spending their wall time.
+        timings: dict[str, float] = {}
+
+        def _tick(label: str, since: float) -> float:
+            now = time.monotonic()
+            timings[label] = round(now - since, 2)
+            return now
+
+        t_run_start = time.monotonic()
         try:
+            t_phase = t_run_start
             self._setup_workspace(task, workspace)
+            t_phase = _tick("workspace_setup", t_phase)
+
             runtime_values = build_runtime_values(
                 workspace=workspace,
                 repo_root=self.repo_root,
@@ -261,17 +310,20 @@ class BenchmarkHarness:
                 repo_root=self.repo_root,
                 runtime_values=runtime_values,
             )
+            t_phase = _tick("bg_services_start", t_phase)
 
             transcript = Transcript()
             start_ms = _now_ms()
 
             async with GatewayClient(self.gateway_config) as client:
+                t_phase = _tick("gateway_connect", t_phase)
                 agent_id = await self._create_run_agent(
                     client,
                     task=task,
                     workspace=workspace,
                     run_index=run_index,
                 )
+                t_phase = _tick("agent_create", t_phase)
                 for phase_index, phase in enumerate(task.normalized_phases()):
                     session_key = await client.create_session(
                         model=self.model,
@@ -284,25 +336,50 @@ class BenchmarkHarness:
                     await client.subscribe(session_key)
                     if task.family.value == "browser":
                         await self._assert_browser_support(client, session_key)
+                    t_phase = _tick(f"phase{phase_index}_session_setup", t_phase)
 
                     simulator = UserSimulator(
                         phase.user,
                         runtime_values,
                         prompt_variant=self.prompt_variant,
                     )
+                    turn_index = 0
+                    phase_raw_timeout = float(phase.timeout_seconds or task.timeout_seconds)
+                    turn_timeout = min(phase_raw_timeout, per_turn_cap)
                     while not simulator.is_done:
+                        # Enforce per-run budget: if we've already burned our whole budget
+                        # on previous turns of this run, bail out and score whatever we have.
+                        elapsed = time.monotonic() - t_run_start
+                        if elapsed >= per_run_budget:
+                            logger.warning(
+                                "Run %s/%s hit per-run budget (%.0fs); stopping user simulator",
+                                task.id,
+                                run_index,
+                                per_run_budget,
+                            )
+                            break
+                        remaining_budget = per_run_budget - elapsed
+                        effective_timeout = min(turn_timeout, remaining_budget)
+
                         user_message = await simulator.next_message(transcript)
                         if user_message is None:
                             break
+                        t_turn_start = time.monotonic()
                         phase_transcript = await client.send_and_wait(
                             session_key,
                             user_message,
-                            timeout=float(phase.timeout_seconds or task.timeout_seconds),
+                            timeout=effective_timeout,
+                        )
+                        timings[f"phase{phase_index}_turn{turn_index}"] = round(
+                            time.monotonic() - t_turn_start, 2
                         )
                         transcript.messages.extend(phase_transcript.messages)
+                        turn_index += 1
+                    t_phase = _tick(f"phase{phase_index}_total", t_phase)
 
                 duration_ms = _now_ms() - start_ms
                 last_session_key = session_keys[-1] if session_keys else ""
+                t_score_start = time.monotonic()
                 result = await score_task_run(
                     task=task,
                     transcript=transcript,
@@ -314,7 +391,34 @@ class BenchmarkHarness:
                     runtime_values=runtime_values,
                     judge_model=self.judge_model,
                 )
+                timings["score"] = round(time.monotonic() - t_score_start, 2)
+                timings["total"] = round(time.monotonic() - t_run_start, 2)
                 result.run_index = run_index
+
+                # Write per-run cache so a future resume of this job can skip this run.
+                if cache_path is not None:
+                    try:
+                        cache_path.parent.mkdir(parents=True, exist_ok=True)
+                        tmp_path = cache_path.with_suffix(".json.tmp")
+                        tmp_path.write_text(
+                            result.model_dump_json(indent=2), encoding="utf-8"
+                        )
+                        tmp_path.replace(cache_path)
+                    except Exception as exc:
+                        logger.warning("Cache write failed for %s/run%s: %s", task.id, run_index, exc)
+
+                logger.info(
+                    "TIMING %s/run%s total=%.1fs score=%.2f C=%.2f T=%.2f B=%.2f J=%.2f  %s",
+                    task.id,
+                    run_index,
+                    timings["total"],
+                    result.run_score,
+                    result.completion_result.score,
+                    result.trajectory_result.score,
+                    result.behavior_result.score,
+                    result.judge_result.score if (result.judge_result.enabled and not result.judge_result.error) else 0.0,
+                    " ".join(f"{k}={v}s" for k, v in timings.items() if k != "total"),
+                )
                 return result
         except Exception as exc:
             logger.exception("Run %s/%s failed", task.id, run_index)

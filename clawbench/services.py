@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -93,6 +94,7 @@ async def start_background_services(
             stdout=log_file,
             stderr=subprocess.STDOUT,
             text=True,
+            start_new_session=True,  # put shell + child in own process group so we can kill the whole tree
         )
         managed = ManagedService(
             spec=spec,
@@ -154,16 +156,28 @@ async def _wait_for_service_ready(
     raise TimeoutError(f"Timed out waiting for background service {spec.name}")
 
 
+def _kill_pgroup(process: subprocess.Popen, sig: int) -> None:
+    """Signal the entire process group so shell-spawned children don't survive."""
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        pass
+
+
 async def stop_background_services(services: list[ManagedService]) -> None:
     for service in reversed(services):
         process = service.process
         if process.poll() is not None:
             continue
-        process.terminate()
+        _kill_pgroup(process, signal.SIGTERM)
         try:
             await asyncio.wait_for(asyncio.to_thread(process.wait, 5), timeout=6)
         except Exception:
-            process.kill()
+            _kill_pgroup(process, signal.SIGKILL)
             try:
                 await asyncio.wait_for(asyncio.to_thread(process.wait, 5), timeout=6)
             except Exception:

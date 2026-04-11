@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -526,6 +527,67 @@ class EvalWorker:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
 
+        # Sanitize the lane-local config so the gateway doesn't try to start user-wide
+        # chat channels (telegram/discord/slack) inside a benchmark container. With 4
+        # concurrent lanes, they all poll the same Telegram bot token and hit 409
+        # Conflict -> restart loop -> sessions.create takes >4 minutes. Same for Discord
+        # DNS failures and Slack socket-mode timeouts. Also removes stale plugin entries
+        # that were generating config warnings and forces browser runtime flags.
+        self._sanitize_lane_state_dir(target_state_dir)
+
+    def _sanitize_lane_state_dir(self, lane_state_dir: Path) -> None:
+        cfg_path = lane_state_dir / "openclaw.json"
+        if not cfg_path.exists():
+            return
+        try:
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Lane state sanitize: failed to parse %s: %s", cfg_path, exc)
+            return
+
+        # 1. Disable chat channels so the gateway doesn't try to connect to
+        #    Telegram/Discord/Slack on startup (they thrash when 4 lanes share one token).
+        channels = data.get("channels")
+        if isinstance(channels, dict):
+            for channel_name in ("telegram", "discord", "slack"):
+                channel = channels.get(channel_name)
+                if isinstance(channel, dict) and channel.get("enabled") is not False:
+                    channel["enabled"] = False
+
+        # 2. Drop stale plugins that emit config warnings and slow gateway boot.
+        plugins = data.get("plugins")
+        if isinstance(plugins, dict):
+            stale_plugins = {"marxbiotech-git-tools"}
+            allow = plugins.get("allow")
+            if isinstance(allow, list):
+                plugins["allow"] = [p for p in allow if p not in stale_plugins]
+            entries = plugins.get("entries")
+            if isinstance(entries, dict):
+                for stale in list(entries.keys()):
+                    if stale in stale_plugins:
+                        entries.pop(stale, None)
+
+        # 3. Force browser runtime + skipBootstrap + current benchmark model.
+        def _set_nested(node, path, value):
+            parts = path.split(".")
+            cursor = node
+            for part in parts[:-1]:
+                if not isinstance(cursor.get(part), dict):
+                    cursor[part] = {}
+                cursor = cursor[part]
+            cursor[parts[-1]] = value
+
+        _set_nested(data, "browser.headless", True)
+        _set_nested(data, "browser.noSandbox", True)
+        _set_nested(data, "agents.defaults.skipBootstrap", True)
+        if self._active_model:
+            _set_nested(data, "agents.defaults.model.primary", self._active_model)
+            _set_nested(data, "agents.defaults.subagents.model.primary", self._active_model)
+
+        tmp_path = cfg_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp_path.replace(cfg_path)
+
     def _order_task_stats(self, tasks: list[TaskDefinition], combined_stats: list) -> list:
         stats_by_id = {}
         for stat in combined_stats:
@@ -621,13 +683,15 @@ class EvalWorker:
             stdout=open("/tmp/gateway.log", "a", encoding="utf-8"),
             stderr=subprocess.STDOUT,
             env=gateway_env,
+            start_new_session=True,  # own process group so we can reap chromium grandchildren on shutdown
         )
 
         import httpx
 
         # Phase A: wait for /health (fast HTTP probe)
+        health_deadline_sec = int(os.environ.get("CLAWBENCH_GATEWAY_HEALTH_TIMEOUT_SECONDS", "180"))
         health_ok = False
-        for _ in range(60):
+        for _ in range(health_deadline_sec):
             if self._gateway_process.poll() is not None:
                 log_tail = self._read_gateway_log()
                 raise RuntimeError(
@@ -648,7 +712,7 @@ class EvalWorker:
 
         if not health_ok:
             raise RuntimeError(
-                f"Gateway /health did not respond within 60s. Log:\n{self._read_gateway_log()}"
+                f"Gateway /health did not respond within {health_deadline_sec}s. Log:\n{self._read_gateway_log()}"
             )
 
         # Phase B: control-plane probe with retries (see the parallel
@@ -679,6 +743,16 @@ class EvalWorker:
         )
 
     async def _ensure_parallel_gateway(self, lane: ParallelLane, gateway_cmd: list[str]) -> None:
+        # Stagger lane gateway startups so N concurrent gateways don't saturate the
+        # container's CPU/IO during the heavy node boot phase. Each lane waits
+        # lane.index * stagger_seconds before spawning its gateway. With the default
+        # 15s stagger and 4 lanes, the last lane starts at T+45s. Combined with a
+        # 180s /health timeout, even the slowest lane has budget to finish booting
+        # before the probe times out.
+        stagger = float(os.environ.get("CLAWBENCH_LANE_STARTUP_STAGGER_SECONDS", "15"))
+        if lane.index > 0 and stagger > 0:
+            await asyncio.sleep(lane.index * stagger)
+
         process = self._parallel_gateway_processes.get(lane.index)
         if process and process.poll() is None:
             return
@@ -718,6 +792,7 @@ class EvalWorker:
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
                 env=gateway_env,
+                start_new_session=True,  # own process group so chromium grandchildren get reaped with the gateway
             )
         finally:
             log_handle.close()
@@ -725,11 +800,12 @@ class EvalWorker:
 
         import httpx
 
-        # Phase A: wait for /health to return 200. This is a fast HTTP
-        # check and should succeed within a few seconds of the gateway
-        # Popen starting. Max 60 iterations × 1s sleep = 60s budget.
+        # Phase A: wait for /health. With 4 concurrent lanes starting their own
+        # gateways, 60s is too tight — the later lanes lose the race to CPU/IO
+        # saturation. 180s gives every lane room even under contention.
+        health_deadline_sec = int(os.environ.get("CLAWBENCH_GATEWAY_HEALTH_TIMEOUT_SECONDS", "180"))
         health_ok = False
-        for _ in range(60):
+        for _ in range(health_deadline_sec):
             if process.poll() is not None:
                 log_tail = self._read_parallel_gateway_log(lane)
                 raise RuntimeError(
@@ -750,7 +826,7 @@ class EvalWorker:
 
         if not health_ok:
             raise RuntimeError(
-                f"Lane {lane.index + 1} gateway /health did not respond within 60s. "
+                f"Lane {lane.index + 1} gateway /health did not respond within {health_deadline_sec}s. "
                 f"Log:\n{self._read_parallel_gateway_log(lane)}"
             )
 
@@ -800,8 +876,17 @@ class EvalWorker:
         self._active_model = model.strip()
 
     def _should_restart_gateway_for_run(self, task, run_index: int, last_task_id: str | None) -> bool:
+        # First run of the job never needs an explicit restart — _run_serial_benchmark
+        # already starts the gateway fresh at job start.
         if last_task_id is None:
             return run_index > 0 and self._task_requires_fresh_gateway_per_run(task)
+        # Cross-task transitions: ALWAYS restart the gateway. Previously we tried to
+        # skip this to save ~20 min/model of restart overhead, but session/agent state
+        # accumulates inside the gateway's sessions.json file and agents/ directory.
+        # After ~50 min of running, file locks on sessions.json start taking minutes
+        # instead of milliseconds, sessions.create jumps from ~200ms to >200 seconds,
+        # and the harness's 30s control-plane probe fails 3x → job marked failed.
+        # A fresh gateway per task keeps state small and locks fast.
         if task.id != last_task_id:
             return True
         return self._task_requires_fresh_gateway_per_run(task)
@@ -847,34 +932,51 @@ class EvalWorker:
         )
 
     def _configure_browser_runtime(self, gateway_cmd: list[str], gateway_env: dict[str, str]) -> None:
-        # Container browser tasks need headless + no-sandbox for reliable Chromium startup.
-        config_pairs = [
-            ("agents.defaults.skipBootstrap", "true"),
-            ("browser.headless", "true"),
-            ("browser.noSandbox", "true"),
+        # Patch openclaw.json directly instead of calling `node config set` 5x, which takes 40-60s
+        # per call on this container (CLI appears to block on IPC probing the gateway). Values like
+        # browser.headless / skipBootstrap are idempotent; model.primary is the only one that
+        # actually changes between jobs. Edits are atomic via temp-file-then-rename.
+        config_pairs: list[tuple[str, object]] = [
+            ("agents.defaults.skipBootstrap", True),
+            ("browser.headless", True),
+            ("browser.noSandbox", True),
         ]
         if self._active_model:
-            # Keep sub-agent tasks on the benchmark model under test so
-            # delegation is scored on behavior rather than ambient gateway
-            # defaults or provider-specific auth drift.
             config_pairs.extend(
                 [
                     ("agents.defaults.model.primary", self._active_model),
                     ("agents.defaults.subagents.model.primary", self._active_model),
                 ]
             )
-        for key, value in config_pairs:
-            try:
-                subprocess.run(
-                    [*gateway_cmd, "config", "set", key, value],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=gateway_env,
-                    timeout=30,
-                )
-            except Exception as exc:
-                logger.warning("Failed to set %s=%s before gateway startup: %s", key, value, exc)
+        try:
+            self._patch_openclaw_config(config_pairs)
+        except Exception as exc:
+            logger.warning("Direct openclaw.json patch failed: %s", exc)
+
+    @staticmethod
+    def _patch_openclaw_config(pairs: list[tuple[str, object]]) -> None:
+        state_dir = Path(os.environ.get("OPENCLAW_STATE_DIR") or os.path.expanduser("~/.openclaw"))
+        config_path = state_dir / "openclaw.json"
+        if not config_path.exists():
+            logger.warning("openclaw.json not found at %s; skipping direct patch", config_path)
+            return
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        changed = False
+        for key, value in pairs:
+            parts = key.split(".")
+            cursor = data
+            for part in parts[:-1]:
+                if not isinstance(cursor.get(part), dict):
+                    cursor[part] = {}
+                cursor = cursor[part]
+            if cursor.get(parts[-1]) != value:
+                cursor[parts[-1]] = value
+                changed = True
+        if not changed:
+            return
+        tmp_path = config_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp_path.replace(config_path)
 
     def _find_gateway_cmd(self) -> list[str] | None:
         import shutil
@@ -935,32 +1037,56 @@ class EvalWorker:
         except Exception:
             return "(no gateway log)"
 
+    @staticmethod
+    def _signal_pgroup(process: subprocess.Popen, sig: int) -> None:
+        """Send a signal to the process group so chromium grandchildren get reaped."""
+        try:
+            pgid = os.getpgid(process.pid)
+        except ProcessLookupError:
+            return
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            pass
+
     def _stop_gateway(self) -> None:
         if not self._gateway_process:
             return
-        self._gateway_process.terminate()
+        self._signal_pgroup(self._gateway_process, signal.SIGTERM)
         try:
             self._gateway_process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            self._gateway_process.kill()
+            self._signal_pgroup(self._gateway_process, signal.SIGKILL)
+            try:
+                self._gateway_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
         self._gateway_process = None
 
     def _stop_parallel_gateway(self, lane: ParallelLane) -> None:
         process = self._parallel_gateway_processes.pop(lane.index, None)
         if not process:
             return
-        process.terminate()
+        self._signal_pgroup(process, signal.SIGTERM)
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            process.kill()
+            self._signal_pgroup(process, signal.SIGKILL)
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
 
     def _stop_parallel_gateways(self) -> None:
         for lane_index, process in list(self._parallel_gateway_processes.items()):
-            process.terminate()
+            self._signal_pgroup(process, signal.SIGTERM)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
+                self._signal_pgroup(process, signal.SIGKILL)
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
             finally:
                 self._parallel_gateway_processes.pop(lane_index, None)

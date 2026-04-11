@@ -2,12 +2,28 @@
 services:
   clawbench:
     build: .
+    init: true  # runs tini as PID 1 to reap zombies; prevents accumulation of defunct task subprocesses
     ports:
       - "7860:7860"
     environment:
       - GATEWAY_PORT=18789
-      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-local-dev-token-for-testing}  # matches host ~/.openclaw/openclaw.json gateway.auth.token
       - HF_TOKEN=${HF_TOKEN:-}
       - CLAWBENCH_QUEUE_DATASET=openclaw/clawbench-results
+      # Per-turn timeout cap: single send_and_wait can't burn more than this (was hitting full 600s task timeouts)
+      - CLAWBENCH_PER_TURN_TIMEOUT_SECONDS=${CLAWBENCH_PER_TURN_TIMEOUT_SECONDS:-300}
+      # Per-(task, run) wall-clock budget: must be >= per-turn cap * max_turns to let slow tasks finish
+      - CLAWBENCH_PER_RUN_BUDGET_SECONDS=${CLAWBENCH_PER_RUN_BUDGET_SECONDS:-600}
+      # Gateway /health wait budget: 60s default was too tight for 4 concurrent lane starts
+      - CLAWBENCH_GATEWAY_HEALTH_TIMEOUT_SECONDS=${CLAWBENCH_GATEWAY_HEALTH_TIMEOUT_SECONDS:-180}
+      # Stagger between lane gateway spawns so they don't thrash the container on startup
+      - CLAWBENCH_LANE_STARTUP_STAGGER_SECONDS=${CLAWBENCH_LANE_STARTUP_STAGGER_SECONDS:-15}
+      # Per-run result cache dir: lets a resubmitted job skip already-completed (task, run) pairs
+      - CLAWBENCH_RUN_CACHE_DIR=${CLAWBENCH_RUN_CACHE_DIR:-/data/run_cache}
+      # LLM judge for qualitative scoring. Weighted at 10% per the v0.4 spec, only contributes
+      # when the deterministic completion floor is met. Softens overly-strict verifiers.
+      - CLAWBENCH_JUDGE_MODEL=${CLAWBENCH_JUDGE_MODEL:-anthropic/claude-sonnet-4-6}
     volumes:
       - ./data:/data  # Persistent storage (mimics HF /data mount)
+      - ${HOME}/.openclaw:/home/node/.openclaw  # Reuse host gateway config (openrouter key + model registry)
+      - ./profiles:/home/node/app/profiles:ro  # Profiles aren't baked into the image
