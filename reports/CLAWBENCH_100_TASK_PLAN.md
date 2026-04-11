@@ -3,9 +3,10 @@
 ## Goal
 
 Expand ClawBench from 20 tasks to 100 tasks. Cover all 72 queries from the
-基础使用场景测试集 sheet at least loosely. Add new high-frequency personal-agent
-scenarios that the sheet does not capture. Make every task vague-prompted,
-multi-step, and verifiable through deterministic execution checks.
+internal personal-agent use-case corpus (see `baselines/BASELINE_SOURCES.md`)
+at least loosely. Add new high-frequency personal-agent scenarios that the
+corpus does not capture. Make every task vague-prompted, multi-step, and
+verifiable through deterministic execution checks.
 
 ## Core Authoring Rules (apply to every new task)
 

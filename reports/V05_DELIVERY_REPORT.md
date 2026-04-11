@@ -33,8 +33,9 @@ Across 16 scenarios spanning tier 1 to tier 5:
 
 Every new task follows the v0.5 authoring rules: vague prompt, hidden
 requirements in workspace files, multi-stage execution, deterministic
-verifiers, no-fabrication grading. The 72 queries from
-`基础使用场景测试集.xlsx` are all loosely covered by at least one task.
+verifiers, no-fabrication grading. The 72 queries from the internal
+personal-agent use-case corpus (see `baselines/BASELINE_SOURCES.md`)
+are all loosely covered by at least one task.
 
 ### 2. v0.5 Framework Code (4 modules, ~1,000 LOC)
 
