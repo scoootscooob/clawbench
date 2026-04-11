@@ -1,0 +1,88 @@
+name: Sync main to HF Space
+
+# Mirrors every push to `main` on GitHub into the HF Space git remote so
+# that the public ClawBench Space (https://huggingface.co/spaces/ScoootScooob/clawbench)
+# always tracks the source-of-truth repo.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   HF_TOKEN     Hugging Face access token with write permission to the Space.
+#                Create at https://huggingface.co/settings/tokens
+#                (token type "Write" is sufficient; no organization scope needed).
+#   HF_USERNAME  Your Hugging Face username, e.g. "ScoootScooob".
+#                (The Space is `ScoootScooob/clawbench`, so the username is
+#                the owner half of that path.)
+#
+# Optional: set HF_SPACE_ID as a repo variable (not secret) to point the
+# workflow at a different Space; defaults to "ScoootScooob/clawbench".
+
+on:
+  push:
+    branches: [main]
+  # Manual dispatch lets you re-mirror the latest main on demand from
+  # the Actions tab without pushing a new commit.
+  workflow_dispatch:
+
+# Only one mirror job at a time so we never race ourselves into
+# non-fast-forward pushes on the Space remote.
+concurrency:
+  group: sync-to-hf-space
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout GitHub main (full history + LFS)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Verify required secrets
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
+        run: |
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_USERNAME" ]; then
+            echo "::error::HF_TOKEN and HF_USERNAME repository secrets must both be set."
+            echo "  Create HF_TOKEN at https://huggingface.co/settings/tokens (type: Write)"
+            echo "  Set HF_USERNAME to your HF username (the owner of the Space)."
+            exit 1
+          fi
+
+      - name: Push to HF Space remote
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
+          HF_SPACE_ID: ${{ vars.HF_SPACE_ID || 'ScoootScooob/clawbench' }}
+        run: |
+          set -euo pipefail
+          # Authenticate via token in the URL. HF Spaces accept the
+          # username + token basic-auth format over HTTPS git.
+          HF_REMOTE="https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_ID}"
+
+          # Configure identity for any metadata operations. The actual
+          # commits come from GitHub unchanged; we only push refs.
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          echo "Pushing $(git rev-parse --short HEAD) to ${HF_SPACE_ID}..."
+
+          # --force is intentional: GitHub is the single source of truth
+          # for the Space's git history. Anything on the Space side that
+          # wasn't committed via GitHub is overwritten on the next sync.
+          # This prevents the drift situation where someone edits files
+          # in the HF Space UI and creates commits only visible there.
+          git push --force "${HF_REMOTE}" HEAD:main
+
+          echo "Sync complete."
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "### HF Space mirror" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed \`$(git rev-parse --short HEAD)\` to \`ScoootScooob/clawbench\` Space." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "View the Space: <https://huggingface.co/spaces/ScoootScooob/clawbench>" >> "$GITHUB_STEP_SUMMARY"
