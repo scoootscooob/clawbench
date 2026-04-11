@@ -625,6 +625,8 @@ class EvalWorker:
 
         import httpx
 
+        # Phase A: wait for /health (fast HTTP probe)
+        health_ok = False
         for _ in range(60):
             if self._gateway_process.poll() is not None:
                 log_tail = self._read_gateway_log()
@@ -633,18 +635,48 @@ class EvalWorker:
                 )
             try:
                 async with httpx.AsyncClient() as client:
-                    response = await client.get(f"http://127.0.0.1:{GATEWAY_PORT}/health")
-                if response.status_code == 200:
-                    await self._assert_gateway_control_plane(
-                        GatewayConfig(url=GATEWAY_WS_URL, token=GATEWAY_TOKEN)
+                    response = await client.get(
+                        f"http://127.0.0.1:{GATEWAY_PORT}/health",
+                        timeout=2.0,
                     )
-                    logger.info("Gateway healthy")
-                    return
+                if response.status_code == 200:
+                    health_ok = True
+                    break
             except Exception:
                 pass
             await asyncio.sleep(1)
 
-        raise RuntimeError(f"Gateway failed to start within 60s. Log:\n{self._read_gateway_log()}")
+        if not health_ok:
+            raise RuntimeError(
+                f"Gateway /health did not respond within 60s. Log:\n{self._read_gateway_log()}"
+            )
+
+        # Phase B: control-plane probe with retries (see the parallel
+        # variant in _ensure_parallel_gateway for the detailed rationale).
+        gateway_config = GatewayConfig(url=GATEWAY_WS_URL, token=GATEWAY_TOKEN)
+        probe_errors: list[str] = []
+        for attempt in range(3):
+            try:
+                await self._assert_gateway_control_plane(gateway_config)
+                logger.info(
+                    "Gateway healthy%s",
+                    f" (probe attempt {attempt + 1})" if attempt > 0 else "",
+                )
+                return
+            except Exception as exc:
+                probe_errors.append(str(exc))
+                logger.warning(
+                    "Gateway control-plane probe attempt %d failed: %s",
+                    attempt + 1,
+                    exc,
+                )
+                if attempt < 2:
+                    await asyncio.sleep(2)
+
+        raise RuntimeError(
+            f"Gateway control plane failed 3x after /health OK. "
+            f"Errors: {probe_errors}\nLog:\n{self._read_gateway_log()}"
+        )
 
     async def _ensure_parallel_gateway(self, lane: ParallelLane, gateway_cmd: list[str]) -> None:
         process = self._parallel_gateway_processes.get(lane.index)
@@ -693,6 +725,10 @@ class EvalWorker:
 
         import httpx
 
+        # Phase A: wait for /health to return 200. This is a fast HTTP
+        # check and should succeed within a few seconds of the gateway
+        # Popen starting. Max 60 iterations × 1s sleep = 60s budget.
+        health_ok = False
         for _ in range(60):
             if process.poll() is not None:
                 log_tail = self._read_parallel_gateway_log(lane)
@@ -701,17 +737,56 @@ class EvalWorker:
                 )
             try:
                 async with httpx.AsyncClient() as client:
-                    response = await client.get(f"http://127.0.0.1:{lane.port}/health")
+                    response = await client.get(
+                        f"http://127.0.0.1:{lane.port}/health",
+                        timeout=2.0,
+                    )
                 if response.status_code == 200:
-                    await self._assert_gateway_control_plane(lane.gateway_config)
-                    logger.info("Lane %d gateway healthy", lane.index + 1)
-                    return
+                    health_ok = True
+                    break
             except Exception:
                 pass
             await asyncio.sleep(1)
 
+        if not health_ok:
+            raise RuntimeError(
+                f"Lane {lane.index + 1} gateway /health did not respond within 60s. "
+                f"Log:\n{self._read_parallel_gateway_log(lane)}"
+            )
+
+        # Phase B: control-plane probe with explicit retries. A healthy
+        # /health response does not guarantee sessions.create works
+        # immediately — plugin registration races can leave the gateway
+        # accepting HTTP but hanging on WebSocket RPCs. Each probe
+        # attempt fails fast (30s bound in _assert_gateway_control_plane).
+        # On failure we retry up to 2 more times without restarting the
+        # gateway process, because the usual cause is transient plugin
+        # warmup that clears within seconds. If all 3 probes fail we
+        # raise so the lane batch propagates the error upward.
+        probe_errors: list[str] = []
+        for attempt in range(3):
+            try:
+                await self._assert_gateway_control_plane(lane.gateway_config)
+                logger.info(
+                    "Lane %d gateway healthy%s",
+                    lane.index + 1,
+                    f" (probe attempt {attempt + 1})" if attempt > 0 else "",
+                )
+                return
+            except Exception as exc:
+                probe_errors.append(str(exc))
+                logger.warning(
+                    "Lane %d control-plane probe attempt %d failed: %s",
+                    lane.index + 1,
+                    attempt + 1,
+                    exc,
+                )
+                if attempt < 2:
+                    await asyncio.sleep(2)
+
         raise RuntimeError(
-            f"Lane {lane.index + 1} gateway failed to start within 60s. Log:\n{self._read_parallel_gateway_log(lane)}"
+            f"Lane {lane.index + 1} gateway control plane failed 3x after /health OK. "
+            f"Errors: {probe_errors}\nLog:\n{self._read_parallel_gateway_log(lane)}"
         )
 
     async def _prepare_benchmark_run(self, task, run_index: int) -> None:
@@ -817,11 +892,34 @@ class EvalWorker:
         return None
 
     async def _assert_gateway_control_plane(self, gateway_config: GatewayConfig) -> None:
-        async with GatewayClient(gateway_config) as client:
-            session_key = await client.create_session(
-                label=unique_session_label("clawbench-startup-probe")
-            )
-            await client.delete_session(session_key)
+        # Use a tight dedicated config for the probe. A healthy gateway
+        # responds to sessions.create in well under a second, so a 15s
+        # fail-fast here converts a racy plugin-load hang into an
+        # obvious "gateway-not-ready" error instead of a multi-minute
+        # worker stall. The wrapping wait_for is belt-and-suspenders so
+        # the whole probe, including WebSocket connect, bounds at 30s.
+        probe_config = GatewayConfig(
+            url=gateway_config.url,
+            token=gateway_config.token,
+            connect_timeout=gateway_config.connect_timeout,
+            request_timeout=15.0,
+        )
+
+        async def _probe() -> None:
+            async with GatewayClient(probe_config) as client:
+                session_key = await client.create_session(
+                    label=unique_session_label("clawbench-startup-probe")
+                )
+                await client.delete_session(session_key)
+
+        try:
+            await asyncio.wait_for(_probe(), timeout=30.0)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                "Gateway control-plane probe timed out after 30s "
+                "(sessions.create hung on a freshly-started gateway); "
+                "lane will be retried by the queue."
+            ) from exc
 
     def _read_gateway_log(self) -> str:
         try:

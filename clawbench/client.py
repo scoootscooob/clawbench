@@ -155,7 +155,13 @@ class GatewayConfig:
     url: str = "ws://localhost:18789"
     token: str = ""
     connect_timeout: float = 15.0
-    request_timeout: float = 300.0
+    # Per-RPC timeout. 60s is generous for what are sub-second calls
+    # in steady state (agents.create, sessions.create, etc.); fail-fast
+    # here converts a transient gateway hang into a recoverable error
+    # instead of a 5-minute worker stall. Long-running operations like
+    # send_and_wait pass an explicit per-call timeout and do not use
+    # this default.
+    request_timeout: float = 60.0
 
 
 class GatewayClient:
@@ -410,7 +416,13 @@ class GatewayClient:
 
         return _correlate_transcript(Transcript(messages=collected_messages))
 
-    async def _rpc(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def _rpc(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         if not self._ws:
             raise RuntimeError("Gateway client is not connected")
 
@@ -419,14 +431,17 @@ class GatewayClient:
         if params is not None:
             frame["params"] = params
 
+        effective_timeout = timeout if timeout is not None else self.config.request_timeout
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         await self._ws.send(json.dumps(frame))
         try:
-            response = await asyncio.wait_for(future, timeout=self.config.request_timeout)
+            response = await asyncio.wait_for(future, timeout=effective_timeout)
         except asyncio.TimeoutError:
             self._pending.pop(request_id, None)
-            raise TimeoutError(f"RPC {method} timed out")
+            raise TimeoutError(
+                f"RPC {method} timed out after {effective_timeout:.1f}s"
+            )
 
         if not response.get("ok", False):
             error = response.get("error", {})
