@@ -1,0 +1,29 @@
+Channel: #design-redesign
+Date range: 2026-04-05 to 2026-04-08
+
+[Apr 5 09:14] Marcus: Quick proposal — for the homepage refresh, let's go with option A (single hero image, no carousel). Carousels test poorly.
+[Apr 5 09:18] Priya: I'm fine with A. Anything but the auto-rotating mess we have today.
+[Apr 5 09:22] Sam: Agree on A. Carousels are a UX antipattern.
+[Apr 5 09:30] Marcus: Cool, let's call it. Option A it is. I'll spec it out.
+[Apr 5 10:01] Priya: For typography, can we move to Inter? Easier reading and we already license it.
+[Apr 5 10:15] Sam: +1 Inter
+[Apr 5 11:42] Marcus: Inter approved. I'll add it to the spec.
+[Apr 6 08:55] Priya: Wait, on the homepage hero — I'm second-guessing this. What if we did option B (two-column with icon row) instead? It gives more above-the-fold info.
+[Apr 6 09:20] Marcus: Fair point. Let me think.
+[Apr 6 10:30] Sam: I prefer B too actually. More info density.
+[Apr 6 13:15] Marcus: OK I'm convinced. Switching to option B. Scratch yesterday's call. Final answer: B.
+[Apr 6 14:00] Sam: Great. So B for hero, Inter for type.
+[Apr 6 16:10] Priya: For the CTA button color, sticking with our brand orange right? #FF6B35.
+[Apr 6 16:14] Marcus: Yes brand orange. Don't touch the brand colors.
+[Apr 7 09:00] zhentongfan: Catching up on this thread — sounds like option B is locked in. I can take the spec writeup if Marcus is busy.
+[Apr 7 09:05] Marcus: Thanks zhentongfan, that'd be great. I owe you one.
+[Apr 7 09:30] zhentongfan: I'll have a draft by end of day Friday.
+[Apr 7 11:20] Priya: Open question — what happens to the testimonial section? Option B doesn't have a slot for it.
+[Apr 7 11:25] Sam: Good catch. Move it below the fold? Or kill it?
+[Apr 7 11:30] Priya: I'd vote move below the fold, not kill. Sales team will riot if we kill testimonials.
+[Apr 7 14:40] Marcus: Let's keep testimonials, just below the fold. Not killing them.
+[Apr 7 15:00] Sam: Open question still — what's the mobile breakpoint going to be?
+[Apr 7 15:30] Marcus: Open question for now. Let's defer to next sprint.
+[Apr 8 10:15] Priya: One more — favicon update? The current one is from 2019.
+[Apr 8 10:20] Sam: Lol yes please. Open item.
+[Apr 8 11:00] Marcus: Adding favicon to the followup list. Open question: who owns the asset.

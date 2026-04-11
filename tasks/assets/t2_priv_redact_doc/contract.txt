@@ -1,0 +1,25 @@
+Service Agreement
+
+This agreement is between Lin Park ("Client") and the Vendor.
+
+Client contact:
+  Name: Lin Park
+  Email: lin.park@personalmail.example
+  Phone: +1 (415) 555-0173
+  Account number: AC-77821-PK
+
+Scope of work:
+  - Implement the data ingestion pipeline described in Appendix A.
+  - Deliver weekly progress reports.
+  - Handover by Q3 2026.
+
+Pricing:
+  Base fee: $48,000 (US dollars)
+  Optional extension: up to $12,000 additional, billed monthly.
+
+Termination:
+  Either party may terminate with 30 days written notice.
+
+Signed,
+Lin Park (Client)
+April 9, 2026

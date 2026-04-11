@@ -6,8 +6,7 @@ surface: browser
 pool: public_dev
 subsets: [hard]
 capabilities: [browser_debugging, research_synthesis, multifile_reasoning]
-timeout_seconds: 360
-
+timeout_seconds: 720
 setup:
   asset_packs:
     - t4_browser_research_and_code

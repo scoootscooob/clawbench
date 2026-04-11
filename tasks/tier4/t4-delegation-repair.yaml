@@ -6,8 +6,7 @@ surface: coding
 pool: public_dev
 subsets: [hard]
 capabilities: [delegation, bugfix, multifile_reasoning]
-timeout_seconds: 360
-
+timeout_seconds: 720
 setup:
   asset_packs:
     - t4_delegation_repair

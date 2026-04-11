@@ -6,7 +6,6 @@ surface: coding
 pool: public_dev
 capabilities: [multifile_reasoning, structured_output, research_synthesis]
 timeout_seconds: 180
-
 setup:
   asset_packs:
     - t1_architecture_brief

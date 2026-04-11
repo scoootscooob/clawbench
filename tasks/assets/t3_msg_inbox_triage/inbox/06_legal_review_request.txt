@@ -1,0 +1,12 @@
+From: legal@yourcompany.example
+Subject: Need your sign-off on the vendor MSA by EOD Wednesday
+
+Hi,
+
+We're closing the Innotech vendor agreement and need your sign-off on the
+MSA before Wednesday end-of-day. The redlines are minor — mostly
+indemnification language.
+
+Please reply with either "approved" or specific changes.
+
+Legal Team

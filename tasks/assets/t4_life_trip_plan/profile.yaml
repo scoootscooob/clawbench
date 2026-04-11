@@ -1,0 +1,10 @@
+user: zhentongfan
+trip: kyoto-long-weekend
+budget_usd_total: 800
+dietary: vegetarian
+mobility:
+  long_walks: false
+  many_stairs: false
+  notes: "Don't bounce back from packed days like I used to"
+must_include: ["Fushimi Inari"]
+trip_length_days: 3

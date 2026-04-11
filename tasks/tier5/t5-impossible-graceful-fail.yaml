@@ -6,8 +6,7 @@ surface: coding
 pool: public_dev
 subsets: [hard]
 capabilities: [graceful_refusal]
-timeout_seconds: 240
-
+timeout_seconds: 480
 setup:
   asset_packs:
     - t5_impossible_graceful_fail

@@ -6,8 +6,7 @@ surface: coding
 pool: public_dev
 subsets: [hard]
 capabilities: [research_synthesis, tool_composition]
-timeout_seconds: 300
-
+timeout_seconds: 600
 setup:
   asset_packs:
     - t5_hallucination_resistant_evidence
