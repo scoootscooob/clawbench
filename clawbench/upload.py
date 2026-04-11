@@ -1,4 +1,25 @@
-"""Upload benchmark results to a Hugging Face Dataset."""
+"""Upload benchmark results to a Hugging Face Dataset.
+
+IMPORTANT — why this file calls `load_dataset` before `push_to_hub`:
+
+`datasets.Dataset.push_to_hub(repo, split="submissions")` writes a single
+parquet shard to `data/submissions-00000-of-00001.parquet`, REPLACING
+whatever was there. If you push N submissions in sequence without
+reading first, only the Nth row survives — the previous N-1 are lost.
+
+`upload_result()` therefore:
+  1. Loads the existing `submissions` split if it exists
+  2. Appends the new row
+  3. Deduplicates by `submission_id` (so a retried upload of the same
+     run doesn't create two rows)
+  4. Pushes the combined dataset as a fresh parquet shard
+
+At ClawBench's current submission rate (1-2 concurrent jobs) the read-
+then-write race window is negligible. If cross-worker concurrency ever
+becomes material we should move to an actually append-only format
+(e.g. write per-submission parquet shards under `data/submission-<id>-
+of-NNNNN.parquet` instead of overwriting a single shard).
+"""
 
 from __future__ import annotations
 
@@ -137,11 +158,47 @@ async def upload_result(
         ],
     }
 
-    ds = Dataset.from_list([row])
     api = HfApi(token=hf_token)
     ensure_dataset_repo(api, resolved_repo)
 
+    # Read-then-append: load the existing submissions split, add the
+    # new row, deduplicate by submission_id, push the combined dataset
+    # so we never clobber prior rows.
+    combined_rows: list[dict] = []
+    try:
+        from datasets import load_dataset
+
+        existing = load_dataset(
+            resolved_repo,
+            split="submissions",
+            token=hf_token,
+        )
+        combined_rows = [dict(r) for r in existing]
+        logger.info(
+            "Read %d existing submission row(s) from %s",
+            len(combined_rows),
+            resolved_repo,
+        )
+    except Exception as exc:
+        logger.info(
+            "No existing submissions split to append to (%s); starting fresh",
+            exc,
+        )
+
+    new_submission_id = row.get("submission_id")
+    if new_submission_id:
+        combined_rows = [
+            r for r in combined_rows
+            if r.get("submission_id") != new_submission_id
+        ]
+    combined_rows.append(row)
+
+    ds = Dataset.from_list(combined_rows)
     ds.push_to_hub(resolved_repo, split="submissions", token=hf_token)
     url = f"https://huggingface.co/datasets/{resolved_repo}"
-    logger.info("Results uploaded to %s", url)
+    logger.info(
+        "Results uploaded to %s (%d total submission rows)",
+        url,
+        len(combined_rows),
+    )
     return url
