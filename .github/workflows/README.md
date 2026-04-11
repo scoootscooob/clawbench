@@ -1,5 +1,16 @@
 # GitHub Actions
 
+## `ci.yml` — run tests on every push / PR
+
+Runs the repository test suite automatically on:
+
+- every `push` to any branch
+- every `pull_request`
+- manual dispatch from the Actions tab
+
+It uses Python 3.12, installs the package with `pip install -e .`, then
+runs `python -m pytest -q`.
+
 ## `sync-to-hf-space.yml` — auto-mirror main to the HF Space
 
 Mirrors every push to `main` into the HF Space git remote so

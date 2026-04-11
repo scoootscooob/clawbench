@@ -19,6 +19,7 @@ from rich.table import Table
 
 from clawbench import __version__
 from clawbench.client import GatewayClient, GatewayConfig
+from clawbench.releases import compute_task_snapshot_fingerprint, load_active_release
 from clawbench.schemas import (
     BenchmarkResult,
     DeliveryOutcome,
@@ -332,6 +333,13 @@ class BenchmarkHarness:
                 capabilities=[capability.value for capability in task.capabilities],
                 variant_group=task.variant_group,
                 variant_id=task.variant_id,
+                template_id=task.template_id,
+                release_id=task.release_id,
+                source_kind=task.source_kind,
+                privacy_tier=task.privacy_tier,
+                contamination_risk=task.contamination_risk,
+                freshness_epoch=task.freshness_epoch,
+                similarity_hash=task.similarity_hash,
                 official=task.official,
                 run_index=run_index,
                 run_score=0.0,
@@ -469,6 +477,14 @@ class BenchmarkHarness:
                     subsets=[subset.value for subset in task.subsets],
                     capabilities=[capability.value for capability in task.capabilities],
                     variant_group=task.variant_group,
+                    variant_id=task.variant_id,
+                    template_id=task.template_id,
+                    release_id=task.release_id,
+                    source_kind=task.source_kind,
+                    privacy_tier=task.privacy_tier,
+                    contamination_risk=task.contamination_risk,
+                    freshness_epoch=task.freshness_epoch,
+                    similarity_hash=task.similarity_hash,
                     official=task.official,
                     runs=len(runs),
                     mean_completion_score=_mean(completion_scores),
@@ -588,11 +604,15 @@ class BenchmarkHarness:
             for outcome, count in stat.delivery_outcome_counts.items()
             for _ in range(count)
         )
+        active_release = load_active_release()
         result = BenchmarkResult(
             submission_id=str(uuid.uuid4()),
             model=self.model,
             provider=self.provider,
             timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            benchmark_release_id=active_release.benchmark_release_id if active_release else "",
+            public_release_id=active_release.public_release_id if active_release else "public",
+            hidden_release_id=active_release.hidden_release_id if active_release else "",
             environment={
                 "task_count": len(tasks),
                 "pool": self.pool or "all",
@@ -660,6 +680,7 @@ class BenchmarkHarness:
             scenario_results=scenario_results,
             task_results=task_stats,
             environment_checksum=self._benchmark_checksum(tasks),
+            task_snapshot_fingerprint=compute_task_snapshot_fingerprint(tasks),
         )
         if print_report is None:
             should_print_report = self.print_report and not self.quiet
@@ -753,7 +774,9 @@ class BenchmarkHarness:
         console.print(table)
 
     def _benchmark_checksum(self, tasks: list[TaskDefinition]) -> str:
-        payload = "|".join(sorted(task.id for task in tasks))
+        payload = "|".join(
+            sorted(f"{task.id}:{task.pool.value}:{task.variant_id}:{task.release_id}" for task in tasks)
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

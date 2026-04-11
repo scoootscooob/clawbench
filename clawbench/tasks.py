@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from clawbench.releases import get_active_hidden_tasks_dir
 from clawbench.query_catalog import apply_query_metadata_overrides
 from clawbench.schemas import TaskDefinition
 
@@ -77,39 +78,58 @@ def load_all_tasks(
     subsets: list[str] | None = None,
     capabilities: list[str] | None = None,
     official_only: bool = False,
+    include_private: bool = False,
 ) -> list[TaskDefinition]:
-    root = tasks_dir or TASKS_DIR
+    requested_pool = (pool or "").strip().lower()
+    roots: list[Path]
+    if tasks_dir is not None:
+        roots = [tasks_dir]
+    elif requested_pool == "official_hidden":
+        hidden_root = get_active_hidden_tasks_dir()
+        roots = [hidden_root] if hidden_root is not None else []
+    else:
+        roots = [TASKS_DIR]
+        if include_private:
+            hidden_root = get_active_hidden_tasks_dir()
+            if hidden_root is not None:
+                roots.append(hidden_root)
     tasks: list[TaskDefinition] = []
+    seen: set[tuple[str, str, str, str]] = set()
     requested_subsets = {item.lower() for item in (subsets or [])}
     requested_capabilities = {item.lower() for item in (capabilities or [])}
-    tier_roots = sorted(path for path in root.glob("tier*") if path.is_dir())
-    search_roots = tier_roots or [root]
-    for search_root in search_roots:
-        for yaml_path in sorted(search_root.rglob("*.yaml")):
-            if yaml_path.name.startswith("_"):
-                continue
-            task = load_task(yaml_path)
-            if tier and task.tier.value != tier:
-                continue
-            if task_ids and task.id not in task_ids:
-                continue
-            if scenario and (task.scenario is None or task.scenario.value != scenario):
-                continue
-            if artifact_type and (task.artifact_type is None or task.artifact_type.value != artifact_type):
-                continue
-            if prompt_variant and prompt_variant not in {variant.value for variant in task.prompt_variants}:
-                continue
-            if pool and task.pool.value != pool:
-                continue
-            if official_only and not task.official:
-                continue
-            if requested_subsets and not requested_subsets.intersection(subset.value for subset in task.subsets):
-                continue
-            if requested_capabilities and not requested_capabilities.intersection(
-                capability.value for capability in task.capabilities
-            ):
-                continue
-            tasks.append(task)
+    for root in roots:
+        tier_roots = sorted(path for path in root.glob("tier*") if path.is_dir())
+        search_roots = tier_roots or [root]
+        for search_root in search_roots:
+            for yaml_path in sorted(search_root.rglob("*.yaml")):
+                if yaml_path.name.startswith("_"):
+                    continue
+                task = load_task(yaml_path)
+                if tier and task.tier.value != tier:
+                    continue
+                if task_ids and task.id not in task_ids:
+                    continue
+                if scenario and (task.scenario is None or task.scenario.value != scenario):
+                    continue
+                if artifact_type and (task.artifact_type is None or task.artifact_type.value != artifact_type):
+                    continue
+                if prompt_variant and prompt_variant not in {variant.value for variant in task.prompt_variants}:
+                    continue
+                if pool and task.pool.value != pool:
+                    continue
+                if official_only and not task.official:
+                    continue
+                if requested_subsets and not requested_subsets.intersection(subset.value for subset in task.subsets):
+                    continue
+                if requested_capabilities and not requested_capabilities.intersection(
+                    capability.value for capability in task.capabilities
+                ):
+                    continue
+                key = (task.id, task.pool.value, task.variant_id, task.release_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                tasks.append(task)
     return tasks
 
 

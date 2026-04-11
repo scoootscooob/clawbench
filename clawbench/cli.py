@@ -347,6 +347,102 @@ def diagnose(
 
 
 @cli.command()
+@click.option("--release-id", required=True, help="Identifier for the hidden release snapshot")
+@click.option("--tasks-dir", type=click.Path(exists=True), help="Optional source tasks directory")
+@click.option("--tier", type=click.Choice(["tier1", "tier2", "tier3", "tier4", "tier5"]), help="Filter tier")
+@click.option("--scenario", type=click.Choice(SCENARIO_CHOICES), help="Filter query scenario")
+@click.option("--artifact-type", type=click.Choice(["file", "information", "operation", "code", "external_action", "memory", "automation", "mixed"]), help="Filter expected artifact type")
+@click.option("--prompt-variant", type=click.Choice(["clear", "ambiguous"]), default="clear", show_default=True, help="Filter prompt variant support")
+@click.option("--subset", multiple=True, type=click.Choice(["consensus", "hard"]), help="Filter task subset")
+@click.option(
+    "--capability",
+    multiple=True,
+    type=click.Choice(
+        [
+            "bugfix",
+            "refactor",
+            "test_authoring",
+            "multifile_reasoning",
+            "browser_debugging",
+            "structured_output",
+            "memory_continuation",
+            "delegation",
+            "tool_composition",
+            "research_synthesis",
+            "graceful_refusal",
+            "spec_revision",
+            "cross_repo_change",
+            "automation",
+        ]
+    ),
+    help="Filter by capability tag",
+)
+@click.option("--task", "-t", multiple=True, help="Specific source task IDs to include")
+@click.option("--max-tasks", type=int, default=0, show_default=True, help="Limit the snapshot to the first N matching tasks")
+@click.option(
+    "--private-tasks-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the private release root directory",
+)
+@click.option(
+    "--active-release-path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override where the active hidden-release manifest is written",
+)
+@click.option("--activate/--no-activate", default=True, show_default=True, help="Set the new hidden release as active")
+def build_release(
+    release_id: str,
+    tasks_dir: str | None,
+    tier: str | None,
+    scenario: str | None,
+    artifact_type: str | None,
+    prompt_variant: str,
+    subset: tuple[str, ...],
+    capability: tuple[str, ...],
+    task: tuple[str, ...],
+    max_tasks: int,
+    private_tasks_dir: Path | None,
+    active_release_path: Path | None,
+    activate: bool,
+) -> None:
+    from clawbench.releases import build_hidden_release
+    from clawbench.tasks import load_all_tasks
+
+    tasks = load_all_tasks(
+        tasks_dir=Path(tasks_dir) if tasks_dir else None,
+        tier=tier,
+        task_ids=list(task) if task else None,
+        scenario=scenario,
+        artifact_type=artifact_type,
+        prompt_variant=prompt_variant,
+        pool="public_dev",
+        subsets=list(subset),
+        capabilities=list(capability),
+    )
+    if not tasks:
+        raise click.ClickException("No public tasks matched the requested filters.")
+    if max_tasks > 0:
+        tasks = tasks[:max_tasks]
+
+    manifest = build_hidden_release(
+        tasks=tasks,
+        release_id=release_id,
+        private_tasks_root=private_tasks_dir,
+        activate=activate,
+        active_release_path=active_release_path,
+    )
+    click.echo(
+        f"Built hidden release '{manifest.release_id}' with {len(manifest.task_ids)} task(s) at "
+        f"{manifest.hidden_tasks_dir}"
+    )
+    click.echo(f"Snapshot fingerprint: {manifest.task_snapshot_fingerprint}")
+    if activate:
+        click.echo("Active hidden release manifest updated.")
+
+
+@cli.command()
 @click.option("--tasks-dir", type=click.Path(exists=True), help="Custom tasks directory")
 @click.option("--scenario", type=click.Choice(SCENARIO_CHOICES), help="Filter query scenario")
 @click.option("--prompt-variant", type=click.Choice(["clear", "ambiguous"]), help="Filter prompt variant support")

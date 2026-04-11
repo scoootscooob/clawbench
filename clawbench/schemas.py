@@ -383,6 +383,17 @@ class TaskDefinition(BaseModel):
     capabilities: list[CapabilityTag] = Field(default_factory=list)
     variant_group: str = ""
     variant_id: str = "main"
+    template_id: str = ""
+    release_id: str = ""
+    source_kind: str = ""
+    provenance_ids: list[str] = Field(default_factory=list)
+    privacy_tier: str = ""
+    contamination_risk: str = ""
+    freshness_epoch: str = ""
+    first_used_at: str = ""
+    retire_after_runs: int = 0
+    similarity_hash: str = ""
+    canary_token: str = ""
     official: bool = False
     timeout_seconds: int = 180
     pass_threshold: float = 0.7
@@ -525,6 +536,13 @@ class TaskRunResult(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     variant_group: str = ""
     variant_id: str = "main"
+    template_id: str = ""
+    release_id: str = ""
+    source_kind: str = ""
+    privacy_tier: str = ""
+    contamination_risk: str = ""
+    freshness_epoch: str = ""
+    similarity_hash: str = ""
     official: bool = False
     run_index: int
     completion_result: CompletionResult = Field(default_factory=CompletionResult)
@@ -602,6 +620,14 @@ class TaskStats(BaseModel):
     subsets: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
     variant_group: str = ""
+    variant_id: str = "main"
+    template_id: str = ""
+    release_id: str = ""
+    source_kind: str = ""
+    privacy_tier: str = ""
+    contamination_risk: str = ""
+    freshness_epoch: str = ""
+    similarity_hash: str = ""
     official: bool = False
     runs: int
     mean_completion_score: float
@@ -721,6 +747,9 @@ class BenchmarkResult(BaseModel):
     timestamp: str
     openclaw_version: str = ""
     benchmark_version: str = "0.4.0.dev1"
+    benchmark_release_id: str = ""
+    public_release_id: str = ""
+    hidden_release_id: str = ""
     environment: dict[str, Any] = Field(default_factory=dict)
 
     overall_score: float
@@ -763,6 +792,7 @@ class BenchmarkResult(BaseModel):
 
     certified: bool = False
     environment_checksum: str = ""
+    task_snapshot_fingerprint: str = ""
 
     @model_validator(mode="before")
     @classmethod
