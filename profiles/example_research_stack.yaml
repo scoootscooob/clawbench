@@ -1,0 +1,28 @@
+profile:
+  name: example-research-stack
+  base_model: claude-sonnet-4
+  notes: |
+    A typical research-oriented configuration: anthropic provider plus
+    memory + browser tooling. Used as the example in CLI documentation.
+  plugins:
+    enabled:
+      - anthropic
+      - id: memory-lancedb
+        config:
+          dimensions: 1536
+      - browser-playwright
+      - clawhub:rag-pinecone@1.2.0
+      - local:./plugins/code-reviewer
+    slots:
+      memory: memory-lancedb
+      contextEngine: builtin
+    tools_allow:
+      - bash
+      - file_read
+      - file_edit
+      - browser_navigate
+      - browser_click
+      - memory_read
+      - memory_write
+      - pinecone_query
+      - review_file
