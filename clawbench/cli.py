@@ -83,6 +83,39 @@ def cli(verbose: bool) -> None:
 @click.option("--output", "-o", type=click.Path(), help="Output JSON file path")
 @click.option("--no-randomize", is_flag=True, help="Run tasks in definition order")
 @click.option("--upload", is_flag=True, help="Upload results to HF Dataset")
+@click.option(
+    "--concurrency",
+    "-c",
+    default=1,
+    show_default=True,
+    type=int,
+    envvar="CLAWBENCH_CONCURRENCY",
+    help="Number of (task, run) work items to execute in parallel against the gateway. "
+         "Set to 4-8 for dramatic speedup. Browser tasks are still serialized.",
+)
+@click.option(
+    "--browser-concurrency",
+    default=1,
+    show_default=True,
+    type=int,
+    help="Maximum browser tasks to run concurrently. Should normally stay 1 — "
+         "Chromium uses a fixed port that does not parallelize.",
+)
+@click.option(
+    "--profile",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Optional Plugin Profile YAML. When provided, after the benchmark run "
+         "completes the v0.5 Configuration Diagnostic Report is generated and "
+         "the run is recorded in the historical profile database.",
+)
+@click.option(
+    "--insights-dir",
+    type=click.Path(path_type=Path),
+    default=Path(".clawbench/insights"),
+    show_default=True,
+    help="Where to write ecosystem insight files after a --profile run.",
+)
 def run(
     model: str,
     gateway_token: str,
@@ -100,6 +133,10 @@ def run(
     output: str | None,
     no_randomize: bool,
     upload: bool,
+    concurrency: int,
+    browser_concurrency: int,
+    profile: Path | None,
+    insights_dir: Path,
 ) -> None:
     gateway_config = GatewayConfig(token=gateway_token)
     harness = BenchmarkHarness(
@@ -117,6 +154,8 @@ def run(
         official_only=official_only,
         task_ids=list(task) if task else None,
         randomize_order=not no_randomize,
+        concurrency=concurrency,
+        browser_concurrency=browser_concurrency,
     )
 
     result = asyncio.run(harness.run())
@@ -126,10 +165,185 @@ def run(
         json.dump(result.model_dump(), handle, indent=2)
     click.echo(f"\nResults saved to {out_path}")
 
+    if profile is not None:
+        _run_v05_diagnostic(
+            profile_path=profile,
+            result=result,
+            runs_per_task=runs,
+            insights_dir=insights_dir,
+        )
+
     if upload:
         from clawbench.upload import upload_result
 
         asyncio.run(upload_result(result))
+
+
+def _run_v05_diagnostic(
+    *,
+    profile_path: Path,
+    result,
+    runs_per_task: int,
+    insights_dir: Path,
+) -> None:
+    """Post-benchmark v0.5 diagnostic: fingerprint + predict + record + publish."""
+    from clawbench.diagnose_cli import (
+        DEFAULT_DB_PATH,
+        DEFAULT_MANIFEST_DIR,
+        DEFAULT_SUBMISSIONS_DIR,
+        ensure_data_dirs,
+        load_manifests,
+        write_submission_record,
+    )
+    from clawbench.diagnostic import submit_run
+    from clawbench.insights import publish_insights
+    from clawbench.prediction import HistoricalDatabase
+    from clawbench.profile import PluginProfile
+
+    ensure_data_dirs()
+
+    plugin_profile = PluginProfile.from_yaml_file(profile_path)
+    plugin_ids = [e.id for e in plugin_profile.plugins]
+    manifests = load_manifests(DEFAULT_MANIFEST_DIR, plugin_ids)
+    db = HistoricalDatabase(path=DEFAULT_DB_PATH)
+
+    # Extract per-task scores + tier map from the BenchmarkResult
+    actual_per_task: dict[str, float] = {}
+    tier_of: dict[str, str] = {}
+    for task_stats in result.task_results:
+        actual_per_task[task_stats.task_id] = float(task_stats.mean_task_score)
+        if getattr(task_stats, "tier", ""):
+            tier_of[task_stats.task_id] = task_stats.tier
+
+    diagnostic = submit_run(
+        profile=plugin_profile,
+        manifests=manifests,
+        db=db,
+        actual_overall_score=float(result.overall_score),
+        actual_per_task_scores=actual_per_task,
+        tier_of=tier_of or None,
+        n_runs_contributing=runs_per_task,
+    )
+
+    write_submission_record(
+        DEFAULT_SUBMISSIONS_DIR,
+        diagnostic.fingerprint_hash,
+        diagnostic.to_dict(),
+    )
+    publish_insights(
+        db, insights_dir, factor_report=diagnostic.factor_analysis
+    )
+
+    click.echo("")
+    click.echo(diagnostic.render_text())
+    click.echo(
+        f"\nv0.5 diagnostic recorded for profile '{plugin_profile.name}' "
+        f"(fingerprint {diagnostic.fingerprint_hash}). "
+        f"Insights published to {insights_dir}."
+    )
+
+
+@cli.command()
+@click.argument("profile", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--results",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Optional v0.4 BenchmarkResult JSON; enables post-run analysis.",
+)
+@click.option(
+    "--manifests",
+    type=click.Path(path_type=Path),
+    default=Path(".clawbench/manifests"),
+    show_default=True,
+    help="Directory of plugin manifest JSON files.",
+)
+@click.option(
+    "--db",
+    type=click.Path(path_type=Path),
+    default=Path(".clawbench/historical/profile_runs.json"),
+    show_default=True,
+    help="Path to the historical profile database.",
+)
+@click.option(
+    "--insights-dir",
+    type=click.Path(path_type=Path),
+    default=Path(".clawbench/insights"),
+    show_default=True,
+)
+@click.option("--json-out", is_flag=True, help="Print diagnostic as JSON")
+def diagnose(
+    profile: Path,
+    results: Path | None,
+    manifests: Path,
+    db: Path,
+    insights_dir: Path,
+    json_out: bool,
+) -> None:
+    """Run the ClawBench v0.5 Configuration Diagnostic for a plugin profile."""
+    from clawbench.diagnose_cli import (
+        DEFAULT_SUBMISSIONS_DIR,
+        ensure_data_dirs,
+        load_manifests,
+        write_submission_record,
+    )
+    from clawbench.diagnostic import build_diagnostic, submit_run
+    from clawbench.insights import publish_insights
+    from clawbench.prediction import HistoricalDatabase
+    from clawbench.profile import PluginProfile
+    from clawbench.schemas import BenchmarkResult
+
+    ensure_data_dirs()
+
+    plugin_profile = PluginProfile.from_yaml_file(profile)
+    plugin_ids = [e.id for e in plugin_profile.plugins]
+    manifest_map = load_manifests(manifests, plugin_ids)
+    database = HistoricalDatabase(path=db)
+
+    actual_overall: float | None = None
+    actual_per_task: dict[str, float] | None = None
+    tier_of: dict[str, str] | None = None
+
+    if results is not None:
+        with open(results, encoding="utf-8") as handle:
+            raw = json.load(handle)
+        br = BenchmarkResult(**raw)
+        actual_overall = float(br.overall_score)
+        actual_per_task = {
+            ts.task_id: float(ts.mean_task_score) for ts in br.task_results
+        }
+        tier_of = {
+            ts.task_id: ts.tier for ts in br.task_results if getattr(ts, "tier", "")
+        }
+
+    if results is not None and actual_per_task is not None and actual_overall is not None:
+        report = submit_run(
+            profile=plugin_profile,
+            manifests=manifest_map,
+            db=database,
+            actual_overall_score=actual_overall,
+            actual_per_task_scores=actual_per_task,
+            tier_of=tier_of,
+        )
+        publish_insights(database, insights_dir, factor_report=report.factor_analysis)
+    else:
+        report = build_diagnostic(
+            profile=plugin_profile,
+            manifests=manifest_map,
+            db=database,
+            actual_overall_score=actual_overall,
+            actual_per_task_scores=actual_per_task,
+            tier_of=tier_of,
+        )
+
+    write_submission_record(
+        DEFAULT_SUBMISSIONS_DIR, report.fingerprint_hash, report.to_dict()
+    )
+
+    if json_out:
+        click.echo(json.dumps(report.to_dict(), indent=2, default=str))
+    else:
+        click.echo(report.render_text())
 
 
 @cli.command()

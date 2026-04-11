@@ -41,12 +41,45 @@ DONE_PATTERN = re.compile(
     r"\b(done|fixed|completed|finished|all set|tests pass|verified|resolved|ready)\b",
     re.IGNORECASE,
 )
-RUN_SCORE_WEIGHTS = {
+# Deterministic weights (used when no judge available, or when the task
+# has deterministic execution checks — see combine_run_score).
+RUN_SCORE_WEIGHTS_DETERMINISTIC = {
     "completion": 0.40,
     "trajectory": 0.30,
     "behavior": 0.20,
 }
+
+# Weights when a judge is available AND the task has NO deterministic
+# completion verifiers. In that regime the judge is the only signal that
+# captures semantic correctness.
+RUN_SCORE_WEIGHTS_SEMANTIC_ONLY = {
+    "completion": 0.20,
+    "trajectory": 0.20,
+    "behavior": 0.10,
+    "judge":      0.50,
+}
+
+# Weights when a judge is available AND the task has deterministic
+# completion verifiers. Per CLAWBENCH_V0_4_SPEC.md §"Disallowed Primary
+# Verifiers" and §"Judge Gating", the judge must not dominate the score
+# when deterministic verification is possible. Judge contribution is
+# capped at 10% and only contributes at all when the deterministic floor
+# is effectively met (completion.score >= 0.9999) — this gate is enforced
+# in combine_run_score().
+RUN_SCORE_WEIGHTS_WITH_DETERMINISTIC_JUDGE = {
+    "completion": 0.40,
+    "trajectory": 0.30,
+    "behavior": 0.20,
+    "judge":      0.10,
+}
+
+# Backward-compat alias — kept pointing at the deterministic weights
+# which is what existing callers implicitly expect.
+RUN_SCORE_WEIGHTS = RUN_SCORE_WEIGHTS_DETERMINISTIC
 RUN_SCORE_WEIGHT_TOTAL = sum(RUN_SCORE_WEIGHTS.values())
+# Legacy alias — a few tests may still reference this name. It is now a
+# synonym for the semantic-only weighting.
+RUN_SCORE_WEIGHTS_WITH_JUDGE = RUN_SCORE_WEIGHTS_SEMANTIC_ONLY
 
 
 async def score_task_run(
@@ -88,6 +121,12 @@ async def score_task_run(
         completion=completion_result.score,
         trajectory=trajectory_result.score,
         behavior=behavior_result.score,
+        judge=(
+            judge_result.score
+            if judge_result.enabled and not judge_result.error
+            else None
+        ),
+        has_deterministic_verifier=completion_result.total_assertions > 0,
     )
     delivery_outcome = classify_delivery_outcome(
         task=task,
@@ -134,13 +173,77 @@ async def score_task_run(
     )
 
 
-def combine_run_score(*, completion: float, trajectory: float, behavior: float) -> float:
-    weighted_sum = (
-        RUN_SCORE_WEIGHTS["completion"] * completion
-        + RUN_SCORE_WEIGHTS["trajectory"] * trajectory
-        + RUN_SCORE_WEIGHTS["behavior"] * behavior
-    )
-    score = weighted_sum / RUN_SCORE_WEIGHT_TOTAL if RUN_SCORE_WEIGHT_TOTAL else 0.0
+DETERMINISTIC_FLOOR = 0.9999
+
+
+def combine_run_score(
+    *,
+    completion: float,
+    trajectory: float,
+    behavior: float,
+    judge: float | None = None,
+    has_deterministic_verifier: bool = False,
+) -> float:
+    """Blend completion + trajectory + behavior (+ judge when available).
+
+    Gating rules, per CLAWBENCH_V0_4_SPEC.md §"Disallowed Primary
+    Verifiers" and §"Judge Gating":
+
+    1. If there is no judge signal, use the deterministic-only weights.
+
+    2. If there is a judge AND the task has a deterministic verifier
+       (execution checks, file assertions, gateway assertions, etc.),
+       the judge is capped at 10% of the run score, and it only
+       contributes when the deterministic completion floor is met
+       (completion.score >= 0.9999). This matches the spec's policy
+       that "semantic quality never rescues failed completion."
+
+    3. If there is a judge AND the task has NO deterministic verifier,
+       the judge is the dominant signal (50%) — this is the only regime
+       where an LLM judge is allowed to drive the primary score.
+    """
+    if judge is None:
+        weights = RUN_SCORE_WEIGHTS_DETERMINISTIC
+        weighted_sum = (
+            weights["completion"] * completion
+            + weights["trajectory"] * trajectory
+            + weights["behavior"] * behavior
+        )
+        total = sum(weights.values())
+    elif has_deterministic_verifier:
+        # Judge is capped and gated on the deterministic floor. When the
+        # floor is not met, the judge signal is completely ignored —
+        # including its weight column — so semantic quality cannot
+        # rescue a failed deterministic completion. When the floor is
+        # met, the judge can contribute at most 10% of the run score.
+        if completion < DETERMINISTIC_FLOOR:
+            weights = RUN_SCORE_WEIGHTS_DETERMINISTIC
+            weighted_sum = (
+                weights["completion"] * completion
+                + weights["trajectory"] * trajectory
+                + weights["behavior"] * behavior
+            )
+            total = sum(weights.values())
+        else:
+            weights = RUN_SCORE_WEIGHTS_WITH_DETERMINISTIC_JUDGE
+            weighted_sum = (
+                weights["completion"] * completion
+                + weights["trajectory"] * trajectory
+                + weights["behavior"] * behavior
+                + weights["judge"] * judge
+            )
+            total = sum(weights.values())
+    else:
+        # Semantic-only task: judge is the dominant signal.
+        weights = RUN_SCORE_WEIGHTS_SEMANTIC_ONLY
+        weighted_sum = (
+            weights["completion"] * completion
+            + weights["trajectory"] * trajectory
+            + weights["behavior"] * behavior
+            + weights["judge"] * judge
+        )
+        total = sum(weights.values())
+    score = weighted_sum / total if total else 0.0
     return round(min(1.0, max(0.0, score)), 4)
 
 

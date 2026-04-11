@@ -9,3 +9,5 @@ results/
 .env
 .tmp/
 data/
+.DS_Store
+.clawbench/

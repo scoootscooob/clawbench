@@ -8,18 +8,28 @@ from typing import Any
 DATASET_SOURCE = "basic_usage_query_suite_v1"
 
 SCENARIO_WEIGHT_DEFAULTS: dict[str, float] = {
-    "file_system_ops": 0.13,
-    "web_info_ops": 0.10,
-    "calendar_reminders": 0.08,
-    "communication_messaging": 0.09,
-    "data_processing_analysis": 0.11,
-    "coding_dev_assist": 0.09,
+    # Original 12 scenarios from the basic-usage query test sheet
+    "file_system_ops": 0.10,
+    "web_info_ops": 0.08,
+    "calendar_reminders": 0.06,
+    "communication_messaging": 0.08,
+    "data_processing_analysis": 0.09,
+    "coding_dev_assist": 0.07,
     "personal_life_assistant": 0.06,
-    "multi_step_compound": 0.12,
+    "multi_step_compound": 0.10,
     "context_continuation": 0.05,
     "error_boundary_cases": 0.05,
-    "skill_calling": 0.07,
-    "system_capabilities": 0.05,
+    "skill_calling": 0.06,
+    "system_capabilities": 0.04,
+    # v0.5 additions: high-frequency personal-agent scenarios beyond the sheet
+    "privacy_pii_handling": 0.04,
+    "personal_financial_hygiene": 0.03,
+    "travel_logistics_under_uncertainty": 0.03,
+    "social_coordination": 0.02,
+    "personal_knowledge_base": 0.02,
+    "health_wellness_tracking": 0.01,
+    "account_security_hygiene": 0.01,
+    "multimodal_understanding": 0.00,
 }
 
 

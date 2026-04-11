@@ -51,10 +51,18 @@ async def judge_task_run(
         )
         await client.subscribe(session_key)
         judge_transcript = await client.send_and_wait(session_key, prompt)
+        # Temporary debug: log first 800 chars of raw judge response when parsing fails
+        raw_text = judge_transcript.assistant_text
         parsed = parse_judge_response(
-            judge_transcript.assistant_text,
+            raw_text,
             passing_threshold=task.judge.passing_threshold,
         )
+        if parsed.error:
+            logger.warning(
+                "Judge parse failed for %s. Raw response (first 800 chars):\n%s",
+                task.id,
+                raw_text[:800] if raw_text else "(empty)",
+            )
         parsed.enabled = True
         parsed.model = judge_model
         parsed.duration_ms = int((time.monotonic() - started_at) * 1000)

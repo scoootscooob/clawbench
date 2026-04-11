@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import hashlib
 import logging
@@ -39,6 +40,18 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
+class _NullCtx:
+    """A no-op async context manager used to skip the browser semaphore
+    for non-browser tasks without branching the call site twice.
+    """
+
+    async def __aenter__(self) -> "_NullCtx":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
 class BenchmarkHarness:
     def __init__(
         self,
@@ -63,6 +76,8 @@ class BenchmarkHarness:
         progress_callback: Callable[[TaskDefinition, int], Awaitable[None]] | None = None,
         print_report: bool = True,
         quiet: bool = False,
+        concurrency: int = 1,
+        browser_concurrency: int = 1,
     ) -> None:
         self.gateway_config = gateway_config
         self.model = model
@@ -84,6 +99,8 @@ class BenchmarkHarness:
         self.progress_callback = progress_callback
         self.print_report = print_report
         self.quiet = quiet
+        self.concurrency = max(1, int(concurrency))
+        self.browser_concurrency = max(1, int(browser_concurrency))
         self.repo_root = Path(__file__).parent.parent
 
     async def run(self) -> BenchmarkResult:
@@ -112,43 +129,117 @@ class BenchmarkHarness:
             console.print(f"Model: [cyan]{self.model}[/cyan]")
             if self.judge_model:
                 console.print(f"Advisory judge: [magenta]{self.judge_model}[/magenta]")
+            mode = "serial" if self.concurrency == 1 else f"parallel(concurrency={self.concurrency}, browser={self.browser_concurrency})"
+            console.print(f"Execution: [bright_blue]{mode}[/]")
             console.print(
                 "Axes: [green]Completion[/] + [blue]Trajectory[/] + [yellow]Behavior[/] + [magenta]Reliability[/]\n"
             )
 
-        all_results: dict[str, list[TaskRunResult]] = {}
-        for task in tasks:
-            if not self.quiet:
-                console.print(f"[bold]{task.id}[/bold] ({task.tier.value}/{task.family.value})")
-            task_runs: list[TaskRunResult] = []
-            for run_index in range(self.runs_per_task):
-                if self.prepare_run is not None:
-                    await self.prepare_run(task, run_index)
-                if self.progress_callback is not None:
-                    await self.progress_callback(task, run_index)
-                result = await self._run_single(task, run_index)
-                task_runs.append(result)
-                if not self.quiet:
-                    passed = self._is_passing_run(task, result)
-                    marker = "[green]+" if passed else "[yellow]~" if result.run_score >= 0.4 else "[red]-"
-                    failure_suffix = f" [red]{result.failure_mode.value}[/]" if result.failure_mode else ""
-                    console.print(
-                        f"  run {run_index + 1}: {marker} {result.run_score:.2f}[/] "
-                        f"[green]C={result.completion_result.score:.2f}[/] "
-                        f"[blue]T={result.trajectory_result.score:.2f}[/] "
-                        f"[yellow]B={result.behavior_result.score:.2f}[/]"
-                        f"{f' [magenta]J={result.judge_result.score:.2f}[/]' if result.judge_result.enabled and not result.judge_result.error else ''}"
-                        f"{failure_suffix}"
-                    )
-                    if result.judge_result.error:
-                        console.print(f"    [yellow]? judge unavailable: {result.judge_result.error}[/]")
-                    for failure in result.completion_result.failed_assertions[:2]:
-                        console.print(f"    [red]! {failure}[/]")
-                    for failure in result.trajectory_result.forbidden_violations[:2]:
-                        console.print(f"    [red]! {failure}[/]")
-            all_results[task.id] = task_runs
+        wall_start = time.monotonic()
+        all_results = await self._execute_runs(tasks)
+        wall_seconds = time.monotonic() - wall_start
+
+        if not self.quiet:
+            total_runs = sum(len(runs) for runs in all_results.values())
+            mean_run = (wall_seconds / total_runs) if total_runs else 0.0
+            console.print(
+                f"\n[dim]Wall time: {wall_seconds:.1f}s across {total_runs} runs "
+                f"({mean_run:.1f}s avg, concurrency={self.concurrency})[/dim]"
+            )
 
         return self._aggregate(tasks, all_results)
+
+    async def _execute_runs(
+        self,
+        tasks: list[TaskDefinition],
+    ) -> dict[str, list[TaskRunResult]]:
+        """Run every (task, run_index) work item, serial or parallel.
+
+        Browser tasks are gated by a separate semaphore so the Chromium
+        port collision can't ever occur, regardless of concurrency level.
+        Non-browser tasks share the global semaphore.
+        """
+        global_sem = asyncio.Semaphore(self.concurrency)
+        browser_sem = asyncio.Semaphore(self.browser_concurrency)
+        print_lock = asyncio.Lock()
+
+        # Build the flat work list. Browser tasks float to the front so they
+        # don't end up sitting in the queue while non-browser slots churn.
+        work_items: list[tuple[TaskDefinition, int]] = []
+        browser_items: list[tuple[TaskDefinition, int]] = []
+        non_browser_items: list[tuple[TaskDefinition, int]] = []
+        for task in tasks:
+            for run_index in range(self.runs_per_task):
+                item = (task, run_index)
+                if task.family.value == "browser":
+                    browser_items.append(item)
+                else:
+                    non_browser_items.append(item)
+        work_items = browser_items + non_browser_items
+
+        results_by_task: dict[str, list[TaskRunResult | None]] = {
+            task.id: [None] * self.runs_per_task for task in tasks
+        }
+        completed = 0
+        total = len(work_items)
+
+        async def run_one(task: TaskDefinition, run_index: int) -> None:
+            nonlocal completed
+            is_browser = task.family.value == "browser"
+
+            async with global_sem:
+                # Browser tasks additionally need the browser-only semaphore
+                # so a parallel non-browser run can never collide with the
+                # Chromium-using run on the gateway's fixed browser port.
+                browser_ctx = browser_sem if is_browser else _NullCtx()
+                async with browser_ctx:
+                    if self.prepare_run is not None:
+                        await self.prepare_run(task, run_index)
+                    if self.progress_callback is not None:
+                        await self.progress_callback(task, run_index)
+                    result = await self._run_single(task, run_index)
+                    results_by_task[task.id][run_index] = result
+
+                    completed += 1
+                    if not self.quiet:
+                        async with print_lock:
+                            self._print_run_result(task, run_index, result, completed, total)
+
+        await asyncio.gather(*(run_one(task, idx) for task, idx in work_items))
+
+        # Convert from list-with-Nones to plain list, preserving run order
+        return {
+            task.id: [r for r in results_by_task[task.id] if r is not None]
+            for task in tasks
+        }
+
+    def _print_run_result(
+        self,
+        task: TaskDefinition,
+        run_index: int,
+        result: TaskRunResult,
+        completed: int,
+        total: int,
+    ) -> None:
+        passed = self._is_passing_run(task, result)
+        marker = "[green]+" if passed else "[yellow]~" if result.run_score >= 0.4 else "[red]-"
+        failure_suffix = f" [red]{result.failure_mode.value}[/]" if result.failure_mode else ""
+        console.print(
+            f"[dim][{completed}/{total}][/dim] [bold]{task.id}[/bold] "
+            f"({task.tier.value}/{task.family.value}) run {run_index + 1}: "
+            f"{marker} {result.run_score:.2f}[/] "
+            f"[green]C={result.completion_result.score:.2f}[/] "
+            f"[blue]T={result.trajectory_result.score:.2f}[/] "
+            f"[yellow]B={result.behavior_result.score:.2f}[/]"
+            f"{f' [magenta]J={result.judge_result.score:.2f}[/]' if result.judge_result.enabled and not result.judge_result.error else ''}"
+            f"{failure_suffix}"
+        )
+        if result.judge_result.error:
+            console.print(f"    [yellow]? judge unavailable: {result.judge_result.error}[/]")
+        for failure in result.completion_result.failed_assertions[:2]:
+            console.print(f"    [red]! {failure}[/]")
+        for failure in result.trajectory_result.forbidden_violations[:2]:
+            console.print(f"    [red]! {failure}[/]")
 
     async def _run_single(self, task: TaskDefinition, run_index: int) -> TaskRunResult:
         workspace = self._create_run_workspace(task, run_index)

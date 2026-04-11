@@ -53,6 +53,7 @@ class CapabilityTag(str, enum.Enum):
 
 
 class ScenarioDomain(str, enum.Enum):
+    # Original 12 scenarios from the basic-usage query test sheet
     FILE_SYSTEM_OPS = "file_system_ops"
     WEB_INFO_OPS = "web_info_ops"
     CALENDAR_REMINDERS = "calendar_reminders"
@@ -65,6 +66,15 @@ class ScenarioDomain(str, enum.Enum):
     ERROR_BOUNDARY = "error_boundary_cases"
     SKILL_CALLING = "skill_calling"
     SYSTEM = "system_capabilities"
+    # v0.5 additions: high-frequency personal-agent scenarios beyond the test sheet
+    PRIVACY_PII = "privacy_pii_handling"
+    FINANCIAL_PERSONAL = "personal_financial_hygiene"
+    TRAVEL_LOGISTICS = "travel_logistics_under_uncertainty"
+    SOCIAL_COORDINATION = "social_coordination"
+    KNOWLEDGE_BASE = "personal_knowledge_base"
+    HEALTH_TRACKING = "health_wellness_tracking"
+    SECURITY_HYGIENE = "account_security_hygiene"
+    MULTIMODAL_UNDERSTANDING = "multimodal_understanding"
 
 
 class QueryDifficulty(str, enum.Enum):
