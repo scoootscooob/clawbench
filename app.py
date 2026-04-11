@@ -156,7 +156,27 @@ def load_leaderboard() -> pd.DataFrame:
 def _flatten_result(data: dict) -> dict:
     tasks = data.get("task_results", [])
     n_tasks = len(tasks) if isinstance(tasks, list) else 0
-    environment = data.get("environment", {}) or {}
+    # `environment` is serialized as `str(result.environment)` by upload.py
+    # when pushed to the HF Dataset, so rows coming back from the dataset
+    # have a string here instead of the nested dict the local JSON files use.
+    # Normalize both shapes into a dict so `.get()` calls below don't explode.
+    raw_env = data.get("environment", {})
+    if isinstance(raw_env, dict):
+        environment = raw_env
+    elif isinstance(raw_env, str) and raw_env.strip():
+        # Best-effort parse of a stringified dict or JSON object.
+        try:
+            parsed = json.loads(raw_env)
+            environment = parsed if isinstance(parsed, dict) else {}
+        except (ValueError, TypeError):
+            try:
+                import ast
+                parsed = ast.literal_eval(raw_env)
+                environment = parsed if isinstance(parsed, dict) else {}
+            except (ValueError, SyntaxError):
+                environment = {}
+    else:
+        environment = {}
     return {
         "Model": data.get("model", ""),
         "Judge Model": data.get("judge_model", environment.get("judge_model", "")) or "-",
@@ -891,10 +911,40 @@ Submit a model and it will be evaluated on HF infrastructure.<br>
 </p>
 """
 
-STAT_TASKS = '<div class="stat-pill"><div class="label">Tasks</div><div class="value">20</div></div>'
-STAT_TIERS = '<div class="stat-pill"><div class="label">Tiers</div><div class="value">5</div></div>'
-STAT_BROWSER = '<div class="stat-pill"><div class="label">Browser</div><div class="value accent">2</div></div>'
-STAT_JUDGE = '<div class="stat-pill"><div class="label">Judge</div><div class="value accent">6</div></div>'
+# ── Stat counts: computed dynamically from the live task corpus so the
+#    ribbon tracks additions/removals without manual edits. ──
+def _compute_stats() -> dict[str, int]:
+    try:
+        from clawbench.tasks import load_all_tasks
+        tasks = load_all_tasks()
+    except Exception as exc:
+        logger.warning("Stat computation failed, falling back to defaults: %s", exc)
+        return {"tasks": 40, "tiers": 5, "browser": 2, "judge": 6}
+    n_tasks = len(tasks)
+    n_tiers = len({t.tier.value for t in tasks}) or 5
+    n_browser = sum(1 for t in tasks if t.family.value == "browser")
+    n_judge = sum(1 for t in tasks if t.judge is not None)
+    return {"tasks": n_tasks, "tiers": n_tiers, "browser": n_browser, "judge": n_judge}
+
+
+_STATS = _compute_stats()
+
+STAT_TASKS = (
+    f'<div class="stat-pill"><div class="label">Tasks</div>'
+    f'<div class="value">{_STATS["tasks"]}</div></div>'
+)
+STAT_TIERS = (
+    f'<div class="stat-pill"><div class="label">Tiers</div>'
+    f'<div class="value">{_STATS["tiers"]}</div></div>'
+)
+STAT_BROWSER = (
+    f'<div class="stat-pill"><div class="label">Browser</div>'
+    f'<div class="value accent">{_STATS["browser"]}</div></div>'
+)
+STAT_JUDGE = (
+    f'<div class="stat-pill"><div class="label">Judge</div>'
+    f'<div class="value accent">{_STATS["judge"]}</div></div>'
+)
 STAT_PRESETS = (
     '<div class="stat-pill"><div class="label">Presets</div><div class="value teal">'
     + str(len(PRESET_MODELS))
