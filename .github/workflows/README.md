@@ -1,0 +1,81 @@
+# GitHub Actions
+
+## `sync-to-hf-space.yml` — auto-mirror main to the HF Space
+
+Mirrors every push to `main` into the HF Space git remote so
+[huggingface.co/spaces/ScoootScooob/clawbench](https://huggingface.co/spaces/ScoootScooob/clawbench)
+always tracks GitHub `main`. GitHub becomes the single source of truth;
+the HF Space is a pure deploy target.
+
+## One-time setup (required before the workflow can succeed)
+
+The workflow needs **two repository secrets**. Neither is checked into
+the repo; you add them via the GitHub UI.
+
+### 1. Get a Hugging Face access token
+
+1. Go to <https://huggingface.co/settings/tokens>
+2. Click **"New token"**
+3. Name it something like `clawbench-github-actions`
+4. Token type: **"Write"** (read-only will NOT work — the workflow
+   needs to push commits to the Space git repo)
+5. Click **"Generate a token"** and copy it (you'll only see it once)
+
+### 2. Add the secrets to this repo
+
+1. Go to <https://github.com/scoootscooob/clawbench/settings/secrets/actions>
+2. Click **"New repository secret"** and add each of these:
+
+   | Name          | Value                                                      |
+   |---------------|------------------------------------------------------------|
+   | `HF_TOKEN`    | The write-scoped HF token you created in step 1            |
+   | `HF_USERNAME` | `ScoootScooob` (the owner half of the Space path)          |
+
+3. Save both.
+
+### 3. Verify
+
+Either push any commit to `main`, or trigger the workflow manually:
+
+1. Go to the **Actions** tab → **"Sync main to HF Space"**
+2. Click **"Run workflow"** → `main` branch → **"Run workflow"**
+3. Watch it run. Green check = mirror is live.
+
+After the first successful run, every push to `main` automatically
+mirrors to the Space with no further action. You can watch the sync
+status under the Actions tab for any commit.
+
+## How the workflow behaves
+
+- **Trigger:** push to `main`, or manual dispatch from the Actions tab.
+- **Concurrency:** serialized via `group: sync-to-hf-space` so two
+  pushes cannot race into a non-fast-forward rejection.
+- **Force:** the push uses `git push --force`. This is intentional —
+  anything committed directly on the Space side (e.g. via the HF web
+  UI file editor) gets overwritten on the next sync. If you want to
+  make a change to the Space, make it on GitHub main and let the
+  workflow mirror it.
+- **Failure modes:**
+  - **Missing secrets** → the `Verify required secrets` step fails with
+    a clear error message telling you what to add.
+  - **Revoked token** → push fails with a 401; check that `HF_TOKEN`
+    still has Write scope on <https://huggingface.co/settings/tokens>.
+  - **Wrong username** → push fails with a repo-not-found error; make
+    sure `HF_USERNAME` matches the Space owner in the URL.
+
+## Optional: change the target Space
+
+If you ever mirror to a different Space (e.g. a staging copy), set a
+repository variable (not a secret) named `HF_SPACE_ID` to the new
+Space ID, for example `yourname/clawbench-staging`. The workflow
+defaults to `ScoootScooob/clawbench` when the variable is unset.
+
+## Why `--force`?
+
+The contract is: **GitHub is the source of truth for the HF Space's
+git history.** The workflow's single job is to make the Space match
+GitHub, no matter what. If you want to edit the Space directly (via
+the HF file editor), don't — make the change on GitHub and let it
+mirror. This avoids the dual-maintainer problem where the two remotes
+drift apart over time, which is exactly the situation this workflow
+was written to fix.
