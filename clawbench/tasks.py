@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
@@ -9,7 +10,52 @@ import yaml
 from clawbench.query_catalog import apply_query_metadata_overrides
 from clawbench.schemas import TaskDefinition
 
-TASKS_DIR = Path(__file__).parent.parent / "tasks"
+
+def _resolve_tasks_dir() -> Path:
+    """Resolve the tasks directory at import time.
+
+    When ClawBench is run from a source checkout, `tasks/` is a sibling of
+    the `clawbench/` package directory. When the package is pip-installed
+    (e.g. inside the HF Space Docker image), that sibling relationship no
+    longer holds — pip copies only `clawbench/` into site-packages, and
+    `tasks/` lives at the Docker WORKDIR instead. This resolver tries a
+    series of candidates in order and falls back to the sibling-of-source
+    path so source runs stay unaffected.
+    """
+    # 1. Explicit override via environment variable.
+    env_dir = os.environ.get("CLAWBENCH_TASKS_DIR", "").strip()
+    if env_dir:
+        candidate = Path(env_dir).expanduser().resolve()
+        if (candidate / "tier1").is_dir() or candidate.glob("tier*"):
+            return candidate
+
+    # 2. Sibling of the package source (works for source checkouts).
+    sibling = Path(__file__).parent.parent / "tasks"
+    if (sibling / "tier1").is_dir():
+        return sibling
+
+    # 3. Current working directory (works when the user runs clawbench from
+    #    a repo root that has tasks/ in it — matches the Dockerfile WORKDIR
+    #    layout `/home/node/app/tasks`).
+    cwd_dir = Path.cwd() / "tasks"
+    if (cwd_dir / "tier1").is_dir():
+        return cwd_dir
+
+    # 4. Known Docker/HF Space layout.
+    for container_candidate in (
+        Path("/home/node/app/tasks"),
+        Path("/home/user/app/tasks"),
+        Path("/app/tasks"),
+    ):
+        if (container_candidate / "tier1").is_dir():
+            return container_candidate
+
+    # 5. Give up and return the sibling path anyway — task loading will
+    #    fail loudly instead of silently returning an empty task list.
+    return sibling
+
+
+TASKS_DIR = _resolve_tasks_dir()
 
 
 def load_task(path: Path) -> TaskDefinition:

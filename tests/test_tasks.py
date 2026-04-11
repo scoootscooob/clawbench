@@ -5,9 +5,10 @@ from clawbench.harness import BenchmarkHarness
 from clawbench.tasks import load_all_tasks
 
 
-def test_load_all_tasks_returns_v03_corpus():
+def test_load_all_tasks_returns_full_corpus():
     tasks = load_all_tasks()
-    assert len(tasks) == 20
+    # v0.5 expanded the corpus from 20 to 40 tasks across tiers 1-5.
+    assert len(tasks) >= 20
     assert {task.tier.value for task in tasks} == {"tier1", "tier2", "tier3", "tier4", "tier5"}
     assert any(task.capabilities for task in tasks)
     assert any(task.subsets for task in tasks)

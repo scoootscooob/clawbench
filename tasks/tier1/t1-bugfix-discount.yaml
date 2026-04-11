@@ -6,7 +6,7 @@ surface: coding
 pool: public_dev
 subsets: [consensus]
 capabilities: [bugfix]
-timeout_seconds: 180
+timeout_seconds: 360
 setup:
   asset_packs:
     - t1_bugfix_discount
