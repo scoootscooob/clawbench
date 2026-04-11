@@ -443,6 +443,133 @@ def build_release(
 
 
 @cli.command()
+@click.option("--input", "input_path", required=True, type=click.Path(exists=True, path_type=Path), help="JSON or JSONL file of raw trace records")
+@click.option(
+    "--source-kind",
+    required=True,
+    type=click.Choice(["hf_open_trace", "partner_trace", "internal_run", "synthetic"]),
+    help="Origin of the traces being ingested",
+)
+@click.option(
+    "--privacy-tier",
+    default="public",
+    show_default=True,
+    type=click.Choice(["public", "private", "partner_restricted"]),
+    help="Privacy level for the ingested traces",
+)
+@click.option("--partner-name", default="", help="Optional partner/source label")
+@click.option(
+    "--factory-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the local task-factory registry root",
+)
+@click.option("--emit-templates/--no-emit-templates", default=True, show_default=True, help="Also derive reusable task templates from the normalized seeds")
+def ingest_traces(
+    input_path: Path,
+    source_kind: str,
+    privacy_tier: str,
+    partner_name: str,
+    factory_root: Path | None,
+    emit_templates: bool,
+) -> None:
+    from clawbench.task_factory import ingest_trace_file
+
+    traces, seeds, templates = ingest_trace_file(
+        input_path=input_path,
+        source_kind=source_kind,
+        privacy_tier=privacy_tier,
+        partner_name=partner_name,
+        factory_root=factory_root,
+        emit_templates=emit_templates,
+    )
+    click.echo(
+        f"Ingested {len(traces)} trace(s) -> {len(seeds)} seed(s)"
+        + (f" -> {len(templates)} template(s)" if emit_templates else "")
+    )
+    if seeds:
+        click.echo(f"First seed: {seeds[0].seed_id}  family={seeds[0].family}  scenario={seeds[0].scenario}")
+
+
+@cli.command()
+@click.option(
+    "--kind",
+    default="seeds",
+    show_default=True,
+    type=click.Choice(["traces", "seeds", "templates"]),
+    help="Registry slice to inspect",
+)
+@click.option(
+    "--factory-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the local task-factory registry root",
+)
+def list_factory(kind: str, factory_root: Path | None) -> None:
+    from clawbench.task_factory import ensure_task_factory_dirs
+
+    dirs = ensure_task_factory_dirs(factory_root)
+    files = sorted(dirs[kind].glob("*.json"))
+    click.echo(f"{kind}: {len(files)} file(s)")
+    for path in files[:50]:
+        click.echo(f"  {path.name}")
+
+
+@cli.command()
+@click.option("--release-id", required=True, help="Identifier for the hidden release built from templates")
+@click.option("--template-id", multiple=True, help="Specific template IDs to promote")
+@click.option("--max-templates", type=int, default=0, show_default=True, help="Limit promotion to the first N matching templates")
+@click.option(
+    "--factory-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the local task-factory registry root",
+)
+@click.option(
+    "--private-tasks-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the private release root directory",
+)
+@click.option(
+    "--active-release-path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override where the active hidden-release manifest is written",
+)
+@click.option("--activate/--no-activate", default=True, show_default=True, help="Set the new hidden release as active")
+def promote_templates(
+    release_id: str,
+    template_id: tuple[str, ...],
+    max_templates: int,
+    factory_root: Path | None,
+    private_tasks_dir: Path | None,
+    active_release_path: Path | None,
+    activate: bool,
+) -> None:
+    from clawbench.task_factory import build_hidden_release_from_templates
+
+    manifest, tasks = build_hidden_release_from_templates(
+        release_id=release_id,
+        template_ids=list(template_id) if template_id else None,
+        max_templates=max_templates,
+        factory_root=factory_root,
+        private_tasks_root=private_tasks_dir,
+        active_release_path=active_release_path,
+        activate=activate,
+    )
+    click.echo(
+        f"Promoted {len(tasks)} template-derived task(s) into hidden release '{manifest.release_id}' at "
+        f"{manifest.hidden_tasks_dir}"
+    )
+    click.echo(f"Snapshot fingerprint: {manifest.task_snapshot_fingerprint}")
+    if tasks:
+        click.echo(f"First promoted task: {tasks[0].id}  template={tasks[0].template_id}")
+    if activate:
+        click.echo("Active hidden release manifest updated.")
+
+
+@cli.command()
 @click.option("--tasks-dir", type=click.Path(exists=True), help="Custom tasks directory")
 @click.option("--scenario", type=click.Choice(SCENARIO_CHOICES), help="Filter query scenario")
 @click.option("--prompt-variant", type=click.Choice(["clear", "ambiguous"]), help="Filter prompt variant support")

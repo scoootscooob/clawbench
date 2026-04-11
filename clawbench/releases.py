@@ -115,7 +115,8 @@ def materialize_hidden_release_tasks(tasks: list[TaskDefinition], *, release_id:
         cloned.freshness_epoch = release_id
         if not cloned.first_used_at:
             cloned.first_used_at = now_utc_iso()
-        cloned.variant_id = release_id
+        if not cloned.variant_id or cloned.variant_id == "main":
+            cloned.variant_id = release_id
         if not cloned.privacy_tier:
             cloned.privacy_tier = "private"
         if not cloned.contamination_risk:
