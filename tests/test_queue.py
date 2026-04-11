@@ -2,7 +2,13 @@ import datetime
 
 import pytest
 
-from clawbench.hub import dataset_has_submission_results, ensure_dataset_repo, resolve_dataset_repo
+from clawbench.hub import (
+    dataset_has_submission_results,
+    ensure_dataset_repo,
+    load_submission_rows_from_parquet,
+    resolve_dataset_repo,
+    submission_parquet_files,
+)
 from clawbench.queue import Job, JobQueue, JobStatus, SubmissionRequest
 
 
@@ -75,6 +81,64 @@ def test_dataset_has_submission_results_detects_uploaded_parquet():
             return ["README.md", "data/submissions-00000-of-00001.parquet"]
 
     assert dataset_has_submission_results(FakeApi(), "ScoootScooob/clawbench-results")
+
+
+def test_submission_parquet_files_filters_to_submissions_split():
+    class FakeApi:
+        def list_repo_files(self, repo_id: str, repo_type: str) -> list[str]:
+            assert repo_id == "ScoootScooob/clawbench-results"
+            assert repo_type == "dataset"
+            return [
+                "README.md",
+                "queue/jobs.json",
+                "data/submissions-00000-of-00001.parquet",
+                "data/requests-00000-of-00001.parquet",
+                "data/submissions-00001-of-00002.parquet",
+            ]
+
+    assert submission_parquet_files(FakeApi(), "ScoootScooob/clawbench-results") == [
+        "data/submissions-00000-of-00001.parquet",
+        "data/submissions-00001-of-00002.parquet",
+    ]
+
+
+def test_load_submission_rows_from_parquet_uses_direct_hub_download(tmp_path):
+    class FakeApi:
+        def list_repo_files(self, repo_id: str, repo_type: str) -> list[str]:
+            assert repo_id == "ScoootScooob/clawbench-results"
+            assert repo_type == "dataset"
+            return ["data/submissions-00000-of-00001.parquet"]
+
+    parquet_path = tmp_path / "submissions.parquet"
+    download_calls: list[tuple[str, str, str, str | None]] = []
+
+    def fake_downloader(*, repo_id: str, repo_type: str, filename: str, token: str | None = None) -> str:
+        download_calls.append((repo_id, repo_type, filename, token))
+        return str(parquet_path)
+
+    class FakeFrame:
+        def to_dict(self, orient: str):
+            assert orient == "records"
+            return [{"model": "anthropic/claude-sonnet-4-6", "overall_score": 0.7}]
+
+    class FakePandas:
+        @staticmethod
+        def read_parquet(path):
+            assert str(path) == str(parquet_path)
+            return FakeFrame()
+
+    rows = load_submission_rows_from_parquet(
+        "ScoootScooob/clawbench-results",
+        token="hf_test",
+        api=FakeApi(),
+        downloader=fake_downloader,
+        pandas_module=FakePandas(),
+    )
+
+    assert download_calls == [
+        ("ScoootScooob/clawbench-results", "dataset", "data/submissions-00000-of-00001.parquet", "hf_test")
+    ]
+    assert rows == [{"model": "anthropic/claude-sonnet-4-6", "overall_score": 0.7}]
 
 
 @pytest.mark.asyncio

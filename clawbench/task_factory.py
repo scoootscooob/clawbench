@@ -35,6 +35,7 @@ def ensure_task_factory_dirs(root: Path | None = None) -> dict[str, Path]:
         "traces": base / "traces",
         "seeds": base / "seeds",
         "templates": base / "templates",
+        "audits": base / "audits",
     }
     for path in paths.values():
         path.mkdir(parents=True, exist_ok=True)
@@ -116,6 +117,28 @@ class TaskTemplateRecord(BaseModel):
     verifier_hint: str = ""
     recommended_source_task_ids: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
+class SimilarityFinding(BaseModel):
+    left_id: str
+    left_kind: str
+    right_id: str
+    right_kind: str
+    score: float
+    shared_family: bool = False
+    shared_scenario: bool = False
+    shared_capabilities: list[str] = Field(default_factory=list)
+    overlap_tokens: list[str] = Field(default_factory=list)
+
+
+class ContaminationAuditReport(BaseModel):
+    created_at: str
+    threshold: float
+    template_count: int = 0
+    public_task_count: int = 0
+    hidden_task_count: int = 0
+    findings: list[SimilarityFinding] = Field(default_factory=list)
+    report_path: str = ""
 
 
 def stable_id(prefix: str, parts: list[str]) -> str:
@@ -244,6 +267,49 @@ def load_template_records(factory_root: Path | None = None) -> list[TaskTemplate
     return templates
 
 
+def audit_contamination(
+    *,
+    threshold: float = 0.72,
+    factory_root: Path | None = None,
+    include_public_tasks: bool = True,
+    include_hidden_tasks: bool = True,
+) -> ContaminationAuditReport:
+    dirs = ensure_task_factory_dirs(factory_root)
+    templates = load_template_records(factory_root)
+    public_tasks = load_all_tasks(pool="public_dev") if include_public_tasks else []
+    hidden_tasks = load_all_tasks(pool="official_hidden") if include_hidden_tasks else []
+
+    findings: list[SimilarityFinding] = []
+
+    for index, left in enumerate(templates):
+        for right in templates[index + 1 :]:
+            finding = compare_template_like(left, right, left_kind="template", right_kind="template")
+            if finding.score >= threshold:
+                findings.append(finding)
+        for task in public_tasks:
+            finding = compare_template_to_task(left, task, right_kind="public_task")
+            if finding.score >= threshold:
+                findings.append(finding)
+        for task in hidden_tasks:
+            finding = compare_template_to_task(left, task, right_kind="hidden_task")
+            if finding.score >= threshold:
+                findings.append(finding)
+
+    findings.sort(key=lambda item: item.score, reverse=True)
+    report = ContaminationAuditReport(
+        created_at=now_utc_iso(),
+        threshold=threshold,
+        template_count=len(templates),
+        public_task_count=len(public_tasks),
+        hidden_task_count=len(hidden_tasks),
+        findings=findings,
+    )
+    report_path = dirs["audits"] / f"audit_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
+    report.report_path = str(report_path)
+    write_json(report_path, report.model_dump(mode="json"))
+    return report
+
+
 def build_hidden_release_from_templates(
     *,
     release_id: str,
@@ -300,6 +366,130 @@ def infer_verifier_hint(seed: TaskSeedRecord) -> str:
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def compare_template_like(
+    left: TaskTemplateRecord,
+    right: TaskTemplateRecord,
+    *,
+    left_kind: str,
+    right_kind: str,
+) -> SimilarityFinding:
+    left_tokens = tokenize_text(left.prompt_skeleton)
+    right_tokens = tokenize_text(right.prompt_skeleton)
+    shared_capabilities = sorted(set(left.capabilities).intersection(right.capabilities))
+    token_overlap = sorted(left_tokens.intersection(right_tokens))
+    score = similarity_score(
+        shared_family=left.family == right.family,
+        shared_scenario=left.scenario == right.scenario,
+        shared_capabilities=shared_capabilities,
+        overlap_tokens=token_overlap,
+        left_cap_count=len(left.capabilities),
+        right_cap_count=len(right.capabilities),
+        left_tokens=left_tokens,
+        right_tokens=right_tokens,
+    )
+    return SimilarityFinding(
+        left_id=left.template_id,
+        left_kind=left_kind,
+        right_id=right.template_id,
+        right_kind=right_kind,
+        score=score,
+        shared_family=left.family == right.family,
+        shared_scenario=left.scenario == right.scenario,
+        shared_capabilities=shared_capabilities,
+        overlap_tokens=token_overlap[:12],
+    )
+
+
+def compare_template_to_task(
+    template: TaskTemplateRecord,
+    task: TaskDefinition,
+    *,
+    right_kind: str,
+) -> SimilarityFinding:
+    template_tokens = tokenize_text(template.prompt_skeleton)
+    task_prompt = first_task_prompt(task)
+    task_tokens = tokenize_text(task_prompt)
+    task_capabilities = [capability.value for capability in task.capabilities]
+    shared_capabilities = sorted(set(template.capabilities).intersection(task_capabilities))
+    token_overlap = sorted(template_tokens.intersection(task_tokens))
+    score = similarity_score(
+        shared_family=template.family == task.family.value,
+        shared_scenario=bool(task.scenario and template.scenario == task.scenario.value),
+        shared_capabilities=shared_capabilities,
+        overlap_tokens=token_overlap,
+        left_cap_count=len(template.capabilities),
+        right_cap_count=len(task_capabilities),
+        left_tokens=template_tokens,
+        right_tokens=task_tokens,
+    )
+    return SimilarityFinding(
+        left_id=template.template_id,
+        left_kind="template",
+        right_id=task.id,
+        right_kind=right_kind,
+        score=score,
+        shared_family=template.family == task.family.value,
+        shared_scenario=bool(task.scenario and template.scenario == task.scenario.value),
+        shared_capabilities=shared_capabilities,
+        overlap_tokens=token_overlap[:12],
+    )
+
+
+def similarity_score(
+    *,
+    shared_family: bool,
+    shared_scenario: bool,
+    shared_capabilities: list[str],
+    overlap_tokens: list[str],
+    left_cap_count: int,
+    right_cap_count: int,
+    left_tokens: set[str],
+    right_tokens: set[str],
+) -> float:
+    capability_union = max(1, len(set(shared_capabilities)) + (left_cap_count - len(shared_capabilities)) + (right_cap_count - len(shared_capabilities)))
+    capability_score = len(shared_capabilities) / capability_union
+    token_union = max(1, len(left_tokens.union(right_tokens)))
+    token_score = len(overlap_tokens) / token_union
+    score = (
+        (0.30 if shared_family else 0.0)
+        + (0.25 if shared_scenario else 0.0)
+        + 0.25 * capability_score
+        + 0.20 * token_score
+    )
+    return round(min(score, 1.0), 4)
+
+
+def tokenize_text(text: str) -> set[str]:
+    lowered = text.lower()
+    tokens = re.findall(r"[a-z0-9_]{4,}", lowered)
+    stop = {
+        "there",
+        "issue",
+        "workspace",
+        "using",
+        "available",
+        "tools",
+        "local",
+        "verify",
+        "result",
+        "make",
+        "needed",
+        "changes",
+        "project",
+        "passes",
+        "through",
+    }
+    return {token for token in tokens if token not in stop}
+
+
+def first_task_prompt(task: TaskDefinition) -> str:
+    if task.user and task.user.turns:
+        return task.user.turns[0].message
+    if task.phases and task.phases[0].user.turns:
+        return task.phases[0].user.turns[0].message
+    return task.name
 
 
 def rank_source_tasks_for_seed(seed: TaskSeedRecord, source_tasks: list[TaskDefinition]) -> list[TaskDefinition]:

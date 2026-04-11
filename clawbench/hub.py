@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,57 @@ def dataset_repo_files(api, repo_id: str) -> set[str]:
 
 def dataset_has_submission_results(api, repo_id: str) -> bool:
     return any(path.endswith(".parquet") for path in dataset_repo_files(api, repo_id))
+
+
+def submission_parquet_files(api, repo_id: str) -> list[str]:
+    """Return submission parquet shards in stable sorted order.
+
+    Restricting to the known `data/submissions*.parquet` layout lets the
+    Space load leaderboard rows directly from Hub files without asking the
+    datasets-server for dataset metadata, which can intermittently 500.
+    """
+    files = dataset_repo_files(api, repo_id)
+    return sorted(path for path in files if path.startswith("data/submissions") and path.endswith(".parquet"))
+
+
+def load_submission_rows_from_parquet(
+    repo_id: str,
+    *,
+    token: str | None = None,
+    api=None,
+    downloader=None,
+    pandas_module=None,
+) -> list[dict[str, Any]]:
+    """Load leaderboard rows directly from parquet shards on the Hub.
+
+    This avoids `datasets.load_dataset(...)`, which triggers datasets-server
+    metadata lookups (`/info`, `dataset_infos.json`, etc.) and can emit noisy
+    500s even when the parquet data itself is healthy.
+    """
+    if api is None:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token=token or None)
+    if downloader is None:
+        from huggingface_hub import hf_hub_download
+
+        downloader = hf_hub_download
+    if pandas_module is None:
+        import pandas as pd
+
+        pandas_module = pd
+
+    rows: list[dict[str, Any]] = []
+    for path_in_repo in submission_parquet_files(api, repo_id):
+        local_path = downloader(
+            repo_id=repo_id,
+            repo_type="dataset",
+            filename=path_in_repo,
+            token=token or None,
+        )
+        frame = pandas_module.read_parquet(Path(local_path))
+        rows.extend(frame.to_dict(orient="records"))
+    return rows
 
 
 def _resolve_owner(token: str | None) -> str | None:

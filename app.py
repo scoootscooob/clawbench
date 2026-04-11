@@ -21,7 +21,11 @@ from pathlib import Path
 
 import gradio as gr
 import pandas as pd
-from clawbench.hub import dataset_has_submission_results, resolve_dataset_repo
+from clawbench.hub import (
+    dataset_has_submission_results,
+    load_submission_rows_from_parquet,
+    resolve_dataset_repo,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("clawbench.app")
@@ -106,19 +110,20 @@ logger.info("Background eval worker started")
 def load_leaderboard() -> pd.DataFrame:
     rows = []
 
-    # Load from HF Dataset
+    # Load from HF Dataset via direct parquet reads. This avoids
+    # `datasets.load_dataset(...)`, which triggers datasets-server metadata
+    # requests that can intermittently fail even when the parquet shards are
+    # perfectly readable.
     try:
-        from datasets import load_dataset
         from huggingface_hub import HfApi
 
         api = HfApi(token=HF_DATASET_TOKEN or None)
         if dataset_has_submission_results(api, HF_DATASET_REPO):
-            ds = load_dataset(
+            for row in load_submission_rows_from_parquet(
                 HF_DATASET_REPO,
-                split="submissions",
                 token=HF_DATASET_TOKEN or None,
-            )
-            for row in ds:
+                api=api,
+            ):
                 rows.append(_flatten_result(row))
     except Exception as exc:
         logger.info("Remote leaderboard unavailable: %s", exc)

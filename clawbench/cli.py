@@ -516,6 +516,42 @@ def list_factory(kind: str, factory_root: Path | None) -> None:
 
 
 @cli.command()
+@click.option("--threshold", type=float, default=0.72, show_default=True, help="Similarity threshold for reporting findings")
+@click.option(
+    "--factory-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the local task-factory registry root",
+)
+@click.option("--include-public/--no-include-public", default=True, show_default=True, help="Compare templates against public tasks")
+@click.option("--include-hidden/--no-include-hidden", default=True, show_default=True, help="Compare templates against the active hidden release")
+def audit_contamination(
+    threshold: float,
+    factory_root: Path | None,
+    include_public: bool,
+    include_hidden: bool,
+) -> None:
+    from clawbench.task_factory import audit_contamination as run_audit
+
+    report = run_audit(
+        threshold=threshold,
+        factory_root=factory_root,
+        include_public_tasks=include_public,
+        include_hidden_tasks=include_hidden,
+    )
+    click.echo(
+        f"Audit complete: {len(report.findings)} finding(s) at threshold >= {report.threshold:.2f} "
+        f"(templates={report.template_count}, public={report.public_task_count}, hidden={report.hidden_task_count})"
+    )
+    click.echo(f"Report: {report.report_path}")
+    for finding in report.findings[:10]:
+        click.echo(
+            f"  {finding.score:.2f}  {finding.left_kind}:{finding.left_id}  ~  "
+            f"{finding.right_kind}:{finding.right_id}"
+        )
+
+
+@cli.command()
 @click.option("--release-id", required=True, help="Identifier for the hidden release built from templates")
 @click.option("--template-id", multiple=True, help="Specific template IDs to promote")
 @click.option("--max-templates", type=int, default=0, show_default=True, help="Limit promotion to the first N matching templates")

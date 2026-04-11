@@ -4,7 +4,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from clawbench.cli import cli
-from clawbench.task_factory import ingest_trace_file
+from clawbench.task_factory import audit_contamination, ingest_trace_file
 
 
 def test_ingest_trace_file_derives_seed_and_template(tmp_path: Path):
@@ -188,3 +188,45 @@ def test_promote_templates_cli_builds_hidden_release(tmp_path: Path, monkeypatch
     assert "pool: official_hidden" in hidden_yaml
     assert "template_id:" in hidden_yaml
     assert "There is an issue somewhere in this workspace." in hidden_yaml
+
+
+def test_audit_contamination_reports_near_duplicate_templates(tmp_path: Path):
+    input_path = tmp_path / "dupes.json"
+    input_path.write_text(
+        json.dumps(
+            [
+                {
+                    "trace_id": "trace-dupe-a",
+                    "user_prompt": "Search is off somewhere in this Node app. Trace it through the files, fix it, and keep the tests green.",
+                    "transcript": {"messages": [{"role": "user", "text": "Search is off somewhere in this Node app."}]},
+                },
+                {
+                    "trace_id": "trace-dupe-b",
+                    "user_prompt": "Search looks wrong somewhere in this Node app. Trace it through the files, patch it, and keep the tests green.",
+                    "transcript": {"messages": [{"role": "user", "text": "Search looks wrong somewhere in this Node app."}]},
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    factory_root = tmp_path / "factory"
+
+    ingest_trace_file(
+        input_path=input_path,
+        source_kind="hf_open_trace",
+        privacy_tier="public",
+        factory_root=factory_root,
+        emit_templates=True,
+    )
+
+    report = audit_contamination(
+        threshold=0.70,
+        factory_root=factory_root,
+        include_public_tasks=False,
+        include_hidden_tasks=False,
+    )
+
+    assert report.findings
+    assert report.findings[0].left_kind == "template"
+    assert report.findings[0].right_kind == "template"
+    assert Path(report.report_path).exists()
