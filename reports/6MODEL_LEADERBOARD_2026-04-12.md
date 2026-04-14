@@ -17,7 +17,7 @@ Rank | Model              | ClawBench |    C  |    T  |    B  |    J  | pass^k |
   3  | Sonnet 4.6         |   0.581   | 0.455 | 0.614 | 0.904 | 0.487 |  0.200 | [0.518, 0.647]  | $0.188
   4  | MiniMax M2.7       |   0.537   | 0.386 | 0.645 | 0.824 | 0.383 |  0.100 | [0.481, 0.596]  | $0.031
   5  | Kimi K2.5          |   0.534   | 0.359 | 0.653 | 0.869 | 0.327 |  0.075 | [0.481, 0.590]  | $0.021
-  6  | GPT 5.4            |   0.456   | 0.322 | 0.443 | 0.840 | 0.438 |  0.100 | [0.400, 0.519]  | $0.044
+  6  | GPT 5.4            |   0.457   | 0.322 | 0.443 | 0.840 | 0.239 |  0.100 | [0.401, 0.519]  | $0.044
 ```
 
 **Axes:**
@@ -203,9 +203,9 @@ This sweep required two bug fixes during the closed-source phase:
 
 2. **Control-plane probe timeout (worker.py)**: Lane 1 gateway consistently failed the control-plane probe (sessions.create over WebSocket) after /health returned 200. Root cause: plugin initialization (especially OpenRouter model list fetch) can take 10-30s after /health. Fixed by adding a 10s grace period after /health, increasing probe timeout from 30s to 60s, and expanding retries from 3 to 5 with 5s back-off.
 
-### GPT 5.4 judge caveat
+### GPT 5.4 judge re-run
 
-73 of 120 GPT 5.4 runs completed before the judge auth fix was deployed, resulting in J=0.0 for those runs. However, since the judge score only contributes when C >= 0.9999, and all 19 perfect-completion runs had working judges, **the overall ClawBench score (0.456) is unaffected**.
+60 of 120 GPT 5.4 runs initially had judge auth errors due to the gateway config stripping bug. All 60 runs were re-judged post-sweep by calling Sonnet 4.6 directly via the Anthropic API using cached transcripts. All 120 runs now have valid judge scores (judge_task_coverage: 1.0, judge_errors: 0). The corrected overall judge score is J=0.239 (previously inflated to 0.438 because error runs were excluded from the average). The overall ClawBench score moved from 0.456 to 0.457 — the affected runs all had C < 0.9999, so judge was gated out of run scores.
 
 ---
 
