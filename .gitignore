@@ -11,3 +11,5 @@ results/
 data/
 .DS_Store
 .clawbench/
+reports/
+scripts/
