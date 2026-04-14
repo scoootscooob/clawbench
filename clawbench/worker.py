@@ -535,6 +535,51 @@ class EvalWorker:
         # that were generating config warnings and forces browser runtime flags.
         self._sanitize_lane_state_dir(target_state_dir)
 
+    def _reinject_host_env_to_lane(self, lane_state_dir: Path) -> None:
+        """Re-inject ``env`` and ``plugins`` from the host config into a lane.
+
+        The OpenClaw gateway normalises its own ``openclaw.json`` on startup,
+        stripping sections it considers ephemeral (``env``, ``plugins``,
+        ``channels``, ``browser``, etc.). After a gateway restart the lane
+        config is therefore missing the API keys the judge (or any fallback
+        model) needs.  This helper reads the *host* bind-mounted config and
+        patches the missing sections back in before the next gateway boot.
+        """
+        source_state_dir = Path(
+            os.environ.get("OPENCLAW_STATE_DIR", os.path.expanduser("~/.openclaw"))
+        )
+        host_cfg_path = source_state_dir / "openclaw.json"
+        lane_cfg_path = lane_state_dir / "openclaw.json"
+        if not host_cfg_path.exists() or not lane_cfg_path.exists():
+            return
+        try:
+            host_cfg = json.loads(host_cfg_path.read_text(encoding="utf-8"))
+            lane_cfg = json.loads(lane_cfg_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("reinject_host_env: parse error: %s", exc)
+            return
+
+        changed = False
+        # Re-inject env block (API keys)
+        host_env = host_cfg.get("env")
+        if isinstance(host_env, dict) and host_env:
+            lane_cfg["env"] = host_env
+            changed = True
+        # Re-inject plugins block
+        host_plugins = host_cfg.get("plugins")
+        if isinstance(host_plugins, dict) and host_plugins:
+            lane_cfg["plugins"] = host_plugins
+            changed = True
+
+        if changed:
+            # Re-apply sanitisation (disable channels, force model, etc.)
+            # by writing + calling _sanitize_lane_state_dir.
+            tmp = lane_cfg_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(lane_cfg, indent=2), encoding="utf-8")
+            tmp.replace(lane_cfg_path)
+            self._sanitize_lane_state_dir(lane_state_dir)
+            logger.debug("reinject_host_env: restored env/plugins for %s", lane_state_dir)
+
     def _sanitize_lane_state_dir(self, lane_state_dir: Path) -> None:
         cfg_path = lane_state_dir / "openclaw.json"
         if not cfg_path.exists():
@@ -756,6 +801,14 @@ class EvalWorker:
         process = self._parallel_gateway_processes.get(lane.index)
         if process and process.poll() is None:
             return
+        # The gateway rewrites its own openclaw.json on boot, stripping the
+        # `env` section (which carries API keys like ANTHROPIC_API_KEY,
+        # OPENROUTER_API_KEY, etc.). On restart between tasks the lane config
+        # is missing all provider keys, so the judge model (and any model
+        # that relies on the config env block) fails with "No API key found".
+        # Re-inject the host config's env + plugins before every restart.
+        if lane.state_dir is not None:
+            self._reinject_host_env_to_lane(lane.state_dir)
         if lane.state_dir is None or lane.log_path is None:
             raise RuntimeError(f"Lane {lane.index + 1} runtime was not materialized before gateway startup")
 
@@ -834,13 +887,14 @@ class EvalWorker:
         # /health response does not guarantee sessions.create works
         # immediately — plugin registration races can leave the gateway
         # accepting HTTP but hanging on WebSocket RPCs. Each probe
-        # attempt fails fast (30s bound in _assert_gateway_control_plane).
-        # On failure we retry up to 2 more times without restarting the
-        # gateway process, because the usual cause is transient plugin
-        # warmup that clears within seconds. If all 3 probes fail we
-        # raise so the lane batch propagates the error upward.
+        # attempt has a 60s bound. On failure we retry up to 4 more
+        # times with 5s back-off (gateway warmup typically clears in 10-20s
+        # after /health). A 10s grace period after /health lets the WebSocket
+        # layer finish initialising before we probe.
+        await asyncio.sleep(10)  # grace period: gateway channels/plugins finish init
+        max_probe_attempts = 5
         probe_errors: list[str] = []
-        for attempt in range(3):
+        for attempt in range(max_probe_attempts):
             try:
                 await self._assert_gateway_control_plane(lane.gateway_config)
                 logger.info(
@@ -857,11 +911,11 @@ class EvalWorker:
                     attempt + 1,
                     exc,
                 )
-                if attempt < 2:
-                    await asyncio.sleep(2)
+                if attempt < max_probe_attempts - 1:
+                    await asyncio.sleep(5)
 
         raise RuntimeError(
-            f"Lane {lane.index + 1} gateway control plane failed 3x after /health OK. "
+            f"Lane {lane.index + 1} gateway control plane failed {max_probe_attempts}x after /health OK. "
             f"Errors: {probe_errors}\nLog:\n{self._read_parallel_gateway_log(lane)}"
         )
 
@@ -994,17 +1048,16 @@ class EvalWorker:
         return None
 
     async def _assert_gateway_control_plane(self, gateway_config: GatewayConfig) -> None:
-        # Use a tight dedicated config for the probe. A healthy gateway
-        # responds to sessions.create in well under a second, so a 15s
-        # fail-fast here converts a racy plugin-load hang into an
-        # obvious "gateway-not-ready" error instead of a multi-minute
-        # worker stall. The wrapping wait_for is belt-and-suspenders so
-        # the whole probe, including WebSocket connect, bounds at 30s.
+        # Use a generous dedicated config for the probe. A healthy gateway
+        # usually responds to sessions.create in under a second, but plugin
+        # initialization (especially OpenRouter model list fetch) can add
+        # 10-30s after /health reports 200. The 60s outer bound ensures we
+        # don't give up during a cold-start scenario.
         probe_config = GatewayConfig(
             url=gateway_config.url,
             token=gateway_config.token,
             connect_timeout=gateway_config.connect_timeout,
-            request_timeout=15.0,
+            request_timeout=30.0,
         )
 
         async def _probe() -> None:
@@ -1015,10 +1068,10 @@ class EvalWorker:
                 await client.delete_session(session_key)
 
         try:
-            await asyncio.wait_for(_probe(), timeout=30.0)
+            await asyncio.wait_for(_probe(), timeout=60.0)
         except asyncio.TimeoutError as exc:
             raise RuntimeError(
-                "Gateway control-plane probe timed out after 30s "
+                "Gateway control-plane probe timed out after 60s "
                 "(sessions.create hung on a freshly-started gateway); "
                 "lane will be retried by the queue."
             ) from exc
