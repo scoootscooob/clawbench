@@ -283,7 +283,7 @@ def classify_tool_call(tool_call: ToolCall) -> tuple[str, bool]:
         return "search", False
     if re.search(r"read|open|view|cat", name):
         return "read", False
-    if re.search(r"write|edit|patch|apply|create|delete|rename", name):
+    if re.search(r"write|edit|patch|apply|create|delete|rename|replace|insert", name):
         return "edit", True
     if re.search(r"bash|exec|terminal|shell|command", name):
         return classify_shell_command(extract_shell_command(tool_call))
