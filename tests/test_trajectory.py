@@ -1,5 +1,5 @@
 from clawbench.schemas import ToolCall, TrajectoryExpectations, Transcript, TranscriptMessage
-from clawbench.trajectory import classify_tool_call, evaluate_trajectory
+from clawbench.trajectory import classify_shell_command, classify_tool_call, evaluate_trajectory
 
 
 def test_trajectory_rewards_read_before_write_and_self_verification():
@@ -150,6 +150,34 @@ def test_str_replace_mutation_is_detected_in_trajectory():
     assert result.distinct_mutation_targets == ["src/calc.py"]
     assert result.self_verified is True
     assert result.read_before_write_ratio == 1.0
+
+
+def test_shell_redirect_vs_quoted_operator():
+    # The `>` character inside a quoted grep/python argument must NOT be
+    # treated as a shell redirect. Before the fix, MUTATING_SHELL_PATTERNS
+    # contained a bare r">" which matched any `>` in the command string,
+    # causing read-only commands like `grep "x > 0"` to be classified as
+    # ("edit", True) instead of ("search", False).
+    read_only_cases = [
+        'grep "count > 5" logs.txt',
+        "grep '>' file.txt",
+        'python -c "print(1 > 0)"',
+        "awk '{if ($1 > 10) print}' data.txt",
+    ]
+    for cmd in read_only_cases:
+        family, mutating = classify_shell_command(cmd)
+        assert not mutating, f"falsely flagged as mutating: {cmd!r}"
+
+    # Real redirects must still be detected.
+    mutating_cases = [
+        "echo hello > output.txt",
+        "echo hello >> output.txt",
+        "cat file.txt > copy.txt",
+        "sed -i 's/a/b/' file",
+    ]
+    for cmd in mutating_cases:
+        _, mutating = classify_shell_command(cmd)
+        assert mutating, f"redirect not detected: {cmd!r}"
 
 
 def test_memory_search_is_not_treated_as_a_mutation():
