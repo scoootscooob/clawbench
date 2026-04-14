@@ -302,7 +302,6 @@ clawbench/
 │   └── assets/                     # Per-task fixture directories
 │
 ├── profiles/                       # v0.5 plugin profile YAMLs
-├── reports/                        # Benchmark run reports
 ├── tests/                          # 107 tests
 ├── CLAWBENCH_V0_4_SPEC.md         # Full specification
 └── PARTNER_TRACE_SPEC.md          # Trace interchange format
