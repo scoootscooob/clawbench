@@ -283,7 +283,7 @@ def classify_tool_call(tool_call: ToolCall) -> tuple[str, bool]:
         return "search", False
     if re.search(r"read|open|view|cat", name):
         return "read", False
-    if re.search(r"write|edit|patch|apply|create|delete|rename", name):
+    if re.search(r"write|edit|patch|apply|create|delete|rename|replace|insert", name):
         return "edit", True
     if re.search(r"bash|exec|terminal|shell|command", name):
         return classify_shell_command(extract_shell_command(tool_call))
@@ -353,8 +353,19 @@ def _normalize_target(value: str) -> str:
     return normalized.lower()
 
 
+def _strip_quoted_strings(command: str) -> str:
+    """Remove the contents of quoted strings so that operators inside quotes
+    (e.g. the ``>`` in ``grep "x > 5" file``) are not mistaken for shell
+    redirect operators when scanning for mutation patterns.
+    """
+    result = re.sub(r'"[^"]*"', '""', command)
+    result = re.sub(r"'[^']*'", "''", result)
+    return result
+
+
 def is_mutating_shell_command(command: str) -> bool:
-    return any(re.search(pattern, command, re.IGNORECASE) for pattern in MUTATING_SHELL_PATTERNS)
+    stripped = _strip_quoted_strings(command)
+    return any(re.search(pattern, stripped, re.IGNORECASE) for pattern in MUTATING_SHELL_PATTERNS)
 
 
 def looks_like_error(text: str) -> bool:
