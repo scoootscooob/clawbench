@@ -1,0 +1,36 @@
+profile:
+  name: local-ollama-gpt-oss
+  base_model: ollama/gpt-oss:20b
+  notes: |
+    Reference profile for running ClawBench with a local Ollama model.
+    Intended as a starting point for researchers and small teams who want
+    to iterate on plugin configurations, tool policies, or prompting
+    strategies without frontier API costs.
+
+    Validated on gpt-oss:20b (single RTX 3090, Docker sandbox mode):
+      Tier-1+2 score: 0.467 (CI 0.375-0.545)
+      Trajectory: 0.666, Behavior: 0.850, Completion: 0.202
+
+    To adapt this profile for your own model:
+      1. Change base_model to your Ollama model ID
+      2. Adjust tools_allow based on which capabilities your model needs
+      3. Run: clawbench run --model <your-model> --profile profiles/local_ollama_gpt_oss.yaml --tier tier1 --runs 3
+      4. Submit your modified profile as a PR with your results
+  plugins:
+    enabled:
+      - ollama
+      - id: memory-lancedb
+        config:
+          dimensions: 1536
+      - browser-playwright
+    slots:
+      memory: memory-lancedb
+      contextEngine: builtin
+    tools_allow:
+      - bash
+      - file_read
+      - file_edit
+      - browser_navigate
+      - browser_click
+      - memory_read
+      - memory_write

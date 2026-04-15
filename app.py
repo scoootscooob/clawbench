@@ -983,7 +983,8 @@ with gr.Blocks(title="ClawBench", theme=clawbench_theme, css=CUSTOM_CSS) as demo
         gr.Markdown("### Submit a model for evaluation")
         gr.Markdown(
             "Select a preset or enter a custom model ID. Open-source models "
-            "run via HuggingFace Inference API. Proprietary models need model auth configured in the Space runtime."
+            "run via HuggingFace Inference API. You can also use locally hosted models "
+            "(for example Ollama) when your OpenClaw runtime has them configured."
         )
 
         preset_input = gr.Dropdown(
@@ -994,7 +995,7 @@ with gr.Blocks(title="ClawBench", theme=clawbench_theme, css=CUSTOM_CSS) as demo
         with gr.Row():
             model_input = gr.Textbox(
                 label="Custom Model ID (if not using preset)",
-                placeholder="e.g. huggingface/org/model-name",
+                placeholder="e.g. huggingface/org/model-name or ollama/gpt-oss:20b",
                 scale=3,
             )
             provider_input = gr.Textbox(
