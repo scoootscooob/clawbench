@@ -253,66 +253,45 @@ clawbench diagnose profiles/frontier_opus_4_6.yaml
 
 ### Running locally with small models (Ollama)
 
-You don't need frontier API keys or expensive compute to contribute to
-ClawBench. A single consumer GPU running a quantized open-weight model through
-[Ollama](https://ollama.com) is enough to develop and validate plugin profiles,
-test algorithmic ideas, and submit results.
+A single consumer GPU running an open-weight model through
+[Ollama](https://ollama.com) is enough to develop plugin profiles, validate
+algorithmic ideas, and submit scored results — no API keys or cloud spend
+required.
 
-**Why this matters for researchers and small teams:**
-
-- **Iterate cheaply.** Run the full task suite on a local 7B–20B model for
-  $0 in API costs. Use the scored results to guide your design before
-  committing to a larger evaluation.
-- **Submit profiles as pull requests.** Even if you only run small models
-  locally, your plugin profile and configuration insights are valuable.
-  The official ClawBench CI can re-evaluate your profile against frontier
-  models when it merges — so your contribution benefits from the full
-  benchmark without you bearing the cost.
-- **Bridge research and practice.** If you have a novel prompting strategy,
-  tool-routing algorithm, or memory architecture, you can validate it here
-  with rigorous, multi-axis scoring (completion, trajectory, behavior,
-  reliability) and confidence intervals — then share the profile for
-  independent reproduction.
+Profiles tested locally can be submitted as pull requests. The official
+ClawBench CI re-evaluates merged profiles against frontier models, so
+researchers and small teams can contribute configurations and novel
+strategies (tool-routing, memory architectures, prompt scaffolding) while
+the project handles the expensive runs.
 
 ```bash
-# 1) Pull a model via Ollama
-ollama pull gpt-oss:20b          # or any model: llama3.1:8b, qwen3:14b, etc.
-
-# 2) Configure your OpenClaw gateway to use Ollama
-#    (see profiles/local_ollama_gpt_oss.yaml for a working example)
+# Pull a model and set your gateway token
+ollama pull gpt-oss:20b   # or llama3.1:8b, qwen3:14b, etc.
 export OPENCLAW_GATEWAY_TOKEN=<your-gateway-token>
 
-# 3) Quick smoke test — one tier-1 task, one run
-clawbench run --model ollama/gpt-oss:20b \
-  --task t1-fs-quick-note --runs 1
+# Quick smoke test
+clawbench run --model ollama/gpt-oss:20b --task t1-fs-quick-note --runs 1
 
-# 4) Broader validation — all tier-1 tasks with CI
-clawbench run --model ollama/gpt-oss:20b \
-  --tier tier1 --runs 5
+# Tier-1 sweep with confidence intervals
+clawbench run --model ollama/gpt-oss:20b --tier tier1 --runs 5
 
-# 5) Full local evaluation with a plugin profile
+# Full local eval with a plugin profile (see profiles/ for examples)
 clawbench run --model ollama/gpt-oss:20b \
   --profile profiles/local_ollama_gpt_oss.yaml \
   --tier tier1 --tier tier2 --runs 5 --concurrency 2
 ```
 
-**Reference results** (gpt-oss:20b on a single RTX 3090, sandbox mode):
+**Reference results** (gpt-oss:20b, RTX 4090, Docker sandbox, network=none):
 
 | Scope | Score | CI | Completion | Trajectory | Behavior |
 |---|---|---|---|---|---|
 | Tier-1 (6 tasks × 3 runs) | 0.397 | 0.346–0.447 | 0.056 | 0.522 | 1.000 |
 | Tier-1+2 (14 tasks × 5 runs) | 0.467 | 0.375–0.545 | 0.202 | 0.666 | 0.850 |
 
-> The model follows instructions and uses tools correctly (high trajectory and
-> behavior) but often writes files to the wrong path or misses exact format
-> requirements (low completion). This is typical for smaller models and shows
-> where prompt engineering or tool-routing improvements can have the most impact.
-
-Concrete ideas for contributing a profile PR:
-- Try a different system prompt that emphasizes exact file paths
-- Add a pre-flight tool call that reads the workspace layout before writing
-- Experiment with chain-of-thought wrappers or multi-turn retry logic
-- Test a different model (llama3.1:8b, qwen3, deepseek-r1, etc.) and report results
+High trajectory/behavior but low completion — the model uses tools correctly
+but writes to wrong paths or misses format constraints. This gap is where
+profile-level improvements (workspace-aware prompts, path-checking pre-flight
+calls, retry wrappers) have the most leverage.
 
 ### Docker (recommended for reproducibility)
 
