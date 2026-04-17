@@ -251,6 +251,48 @@ clawbench run --model anthropic/claude-opus-4-6 --profile profiles/frontier_opus
 clawbench diagnose profiles/frontier_opus_4_6.yaml
 ```
 
+### Running locally with small models (Ollama)
+
+A single consumer GPU running an open-weight model through
+[Ollama](https://ollama.com) is enough to develop plugin profiles, validate
+algorithmic ideas, and submit scored results — no API keys or cloud spend
+required.
+
+Profiles tested locally can still be submitted as pull requests with
+reference results. The built-in GitHub Actions workflows in this repo only
+run the test suite and deployment sync, so treat local Ollama numbers as
+contributor-side evidence unless a maintainer separately reruns them on
+other infrastructure.
+
+```bash
+# Pull a model and set your gateway token
+ollama pull gpt-oss:20b   # or llama3.1:8b, qwen3:14b, etc.
+export OPENCLAW_GATEWAY_TOKEN=<your-gateway-token>
+
+# Quick smoke test
+clawbench run --model ollama/gpt-oss:20b --task t1-fs-quick-note --runs 1
+
+# Tier-1 sweep with confidence intervals
+clawbench run --model ollama/gpt-oss:20b --tier tier1 --runs 5
+
+# Tier-2 sweep (run separately; the CLI accepts one --tier at a time)
+clawbench run --model ollama/gpt-oss:20b --tier tier2 --runs 5 --concurrency 2
+
+# Inspect the reference profile's fingerprint and historical neighbors
+clawbench diagnose profiles/local_ollama_gpt_oss.yaml
+```
+
+**Reference contributor-side results** (gpt-oss:20b, RTX 4090, Docker sandbox, network=none):
+
+| Scope | Score | CI | Completion | Trajectory | Behavior |
+|---|---|---|---|---|---|
+| Tier-1 (6 tasks × 3 runs) | 0.397 | 0.346–0.447 | 0.056 | 0.522 | 1.000 |
+
+High trajectory/behavior but low completion — the model uses tools correctly
+but writes to wrong paths or misses format constraints. This gap is where
+profile-level improvements (workspace-aware prompts, path-checking pre-flight
+calls, retry wrappers) have the most leverage.
+
 ### Docker (recommended for reproducibility)
 
 ```bash
