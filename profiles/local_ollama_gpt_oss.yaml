@@ -2,11 +2,13 @@ profile:
   name: local-ollama-gpt-oss
   base_model: ollama/gpt-oss:20b
   notes: |
-    Reference profile for local Ollama models. Change base_model and
-    tools_allow to match your setup, run with --profile, and submit
-    your results as a PR.
+    Reference profile metadata for local Ollama experiments. Change
+    base_model and tools_allow to match your setup, then use
+    `clawbench diagnose` to inspect the fingerprint and attach your
+    benchmark results separately in a PR.
 
-    Baseline (gpt-oss:20b, RTX 4090, Docker sandbox, network=none):
+    Contributor-side baseline (gpt-oss:20b, RTX 4090, Docker sandbox,
+    network=none):
       Tier-1+2: 0.467 (CI 0.375-0.545), T=0.666, B=0.850, C=0.202
   plugins:
     enabled:
