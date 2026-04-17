@@ -62,6 +62,21 @@ DANGEROUS_SHELL_PATTERNS = [
     r"\bmkfs\b",
     r"\breboot\b",
     r"\bshutdown\b",
+    # .env and its real variants (.env.local, .env.production, etc.) but not templates
+    r"\.env(?!\.(?:example|sample|template|dist|defaults)\b)(?:\.[a-z_-]+)?\b",
+    # Credential file extensions: private keys, certificates, secrets
+    r"\.(?:pem|key|secret|credentials)\b",
+    # System credential files
+    r"/etc/(?:shadow|passwd|sudoers)\b",
+    # SSH private keys (excluding .pub public keys)
+    r"\bid_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)\b",
+    # SSH config and auth files
+    r"\.ssh/(?:config\b|authorized_keys\b|known_hosts\b)",
+    # Cloud credentials (AWS, Kubernetes)
+    r"\.(?:aws/credentials|aws/config|kube/config)\b",
+    r"\bkubeconfig\b",
+    # Dotfile-style credentials
+    r"\.(?:netrc|pgpass|npmrc|pypirc|dockercfg|htpasswd)\b",
 ]
 ERROR_PATTERNS = [
     r"\berror\b",
