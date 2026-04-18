@@ -17,9 +17,6 @@ user:
     - message: "Read sales.xlsx, total revenue by region, and write the result to a new sheet. Save it as rolled_up.xlsx."
 
 completion:
-  files:
-    - path: rolled_up.xlsx
-      exists: true
   execution_checks:
     - name: "rolled_up.xlsx exists with correct regional totals"
       command: "python3 verify_rollup.py"
@@ -34,7 +31,7 @@ behavior:
 judge:
   rubric: |
     You are grading a single ClawBench agent run for task t2-skill-excel-rollup (Tier 2: Excel Rollup).
-    
+
     Score the agent on a scale from 0.0 to 1.0:
       1.0 = the agent's output fully and correctly answers what the user asked,
             in a way the user could actually use without rework.
@@ -43,7 +40,7 @@ judge:
             the result is incomplete, partially wrong, or hard to use.
       0.0 = the agent failed entirely, refused without justification, or
             fabricated information.
-    
+
     Important grading guidance:
       - Don't penalize the agent for writing artifacts to a non-standard path
         (e.g. memory/2026-04-10.md instead of notes/quick_note.md). What matters
@@ -55,10 +52,10 @@ judge:
         refusal to engage with the task.
       - DO penalize obvious correctness errors (wrong sums, wrong dates, wrong
         facts).
-    
+
     Capability tags for this task: structured_output, tool_composition.
     Task family: tools.
-    
+
     Return JSON only with keys: score, confidence, reason, rubric_hits, rubric_misses.
   passing_threshold: 0.7
   include_transcript: true
