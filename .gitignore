@@ -12,4 +12,6 @@ data/
 .DS_Store
 .clawbench/
 reports/
-scripts/
+scripts/__pycache__/
+scripts/*.tmp
+scripts/*.local.py

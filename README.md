@@ -293,6 +293,28 @@ but writes to wrong paths or misses format constraints. This gap is where
 profile-level improvements (workspace-aware prompts, path-checking pre-flight
 calls, retry wrappers) have the most leverage.
 
+### Version control checkpoints
+
+Git is already the source of truth for this repo, but the safest workflow is:
+
+```bash
+# Start risky work on its own branch
+git switch -c codex/<short-topic>
+
+# Commit small checkpoints as you go
+git add -A
+git commit -m "Checkpoint: describe the working state"
+
+# Mark a known-good version with an annotated tag
+python3 scripts/git_checkpoint.py "before-profile-tuning"
+
+# Push the branch and tags so recovery is not only local
+git push -u origin HEAD
+git push origin --tags
+```
+
+The checkpoint script refuses to tag a dirty worktree by default, so every saved version points at a reproducible commit instead of a half-finished local state.
+
 ### Docker (recommended for reproducibility)
 
 ```bash
