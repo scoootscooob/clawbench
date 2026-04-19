@@ -14,16 +14,13 @@ setup:
 user:
   max_turns: 2
   turns:
-    - message: "Refactor the Node project so the duplicated user-id and date parsing logic is centralized in `src/shared.js`. Update the modules to use the shared helper and keep the test suite green."
+    - message: "Refactor the Node project so the user-id and date parsing logic is centralized in `src/shared.js`. There are three callers: auth.js, report.js, and audit.js. Read them before refactoring — they don't all need the same normalization. Update the modules to use the shared helper(s) and keep every test in the suite green."
 
 completion:
-  files:
-    - path: src/shared.js
-      exists: true
-      content_contains:
-        - "normalizeUserId"
+  # The recursive 'node --test' runner grades end-to-end; drop the strict
+  # path requirement so models can choose reasonable alternate names.
   execution_checks:
-    - name: "node refactor tests"
+    - name: "node refactor tests (auth, report, audit)"
       command: "node --test"
 
 trajectory:

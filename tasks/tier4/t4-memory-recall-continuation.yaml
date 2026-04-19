@@ -16,34 +16,38 @@ phases:
     user:
       max_turns: 2
       turns:
-        - message: "Read `docs/release_notes.md`, store a memory with the exact text `beta rollout regions: us, eu; retry budget: 3`, and write the same details into `handoff.md`. Do not change `flags.py` yet."
+        - message: "Read `docs/release_notes.md`. There are THREE distinct facts under 'Feature flags to configure' that we need to codify later. Store each as a SEPARATE memory entry (use distinct keys like `beta-regions`, `retry-budget`, `apac-gating`), and also write all three into `handoff.md`. Do not codify any of the operational notes (those are team-facing context only, not flags). Do not change `flags.py` yet."
   - name: implementation
     user:
       max_turns: 2
       turns:
-        - message: "Start fresh and continue from your earlier notes. Update `flags.py` so the tests pass. I am intentionally not repeating the rollout details."
-        - message: "You already stored the rollout details earlier. Use your saved memory or `handoff.md` instead of rereading the release notes."
+        - message: "Start fresh and continue from your earlier notes. Update `flags.py` so the tests pass (there are three flags to set). I am intentionally not repeating the rollout details."
+        - message: "You already stored those details earlier as separate memory entries. Use your saved memories or `handoff.md` instead of rereading the release notes."
           after_assistant_turns: 1
           when_assistant_contains: "can't|cannot|missing|don't have|do not have|not repeating|blocked"
 
 completion:
-  files:
-    - path: handoff.md
-      exists: true
-      content_contains:
-        - "us"
-        - "eu"
-        - "3"
+  # Recursive verifier handles the handoff.md content check; strict filename
+  # removed so models can use alternate note names.
   memory:
-    - key_pattern: "beta rollout regions"
+    - key_pattern: "(?i)beta.*region|region.*beta"
       exists: true
       value_contains:
         - "us"
         - "eu"
+    - key_pattern: "(?i)retry.*budget|budget.*retry"
+      exists: true
+      value_contains:
         - "3"
+    - key_pattern: "(?i)apac"
+      exists: true
+      value_contains:
+        - "2026.3"
   execution_checks:
-    - name: "flags tests"
+    - name: "flags tests (beta regions, retry budget, APAC gating)"
       command: "pytest -q"
+    - name: "handoff captures all three facts"
+      command: "python3 verify_handoff.py"
 
 trajectory:
   required_families: ["read", "memory", "edit", "execute"]

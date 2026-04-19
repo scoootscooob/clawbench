@@ -19,17 +19,14 @@ setup:
 user:
   max_turns: 2
   turns:
-    - message: "Local docs are available at http://127.0.0.1:{docs_site_port}/. Browse them in the host browser to confirm the reporting API change, then patch the code in the workspace so the tests pass. Also write `api_notes.md` with the exact endpoint and required header you confirmed from the docs. If the browser tool requires a target, use `host`."
+    - message: "Local docs are available at http://127.0.0.1:{docs_site_port}/. Browse them in the host browser to confirm the reporting API contract, then patch `report_client.py` so the tests pass. The code needs the correct endpoint path, the REQUIRED headers (note: some headers mentioned in the docs are for other endpoints, don't include those), the rate limit, and the max payload size. Also write `api_notes.md` citing the exact values you confirmed from the docs (endpoint, required headers, rate limit, max payload). If the browser tool requires a target, use `host`."
 
 completion:
-  files:
-    - path: api_notes.md
-      exists: true
-      content_contains:
-        - "/v2/reports"
-        - "X-Workspace-Id"
+  # Recursive grading: the pytest suite fully validates the code change
+  # and api_notes.md content is checked by judge. Dropping the strict path
+  # requirement so models can name the notes file any reasonable variant.
   execution_checks:
-    - name: "report client tests"
+    - name: "report client tests (endpoint, headers, rate limit, payload)"
       command: "pytest -q"
 
 trajectory:
