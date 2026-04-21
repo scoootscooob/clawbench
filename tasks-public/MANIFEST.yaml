@@ -3,8 +3,6 @@ release: clawbench-core-v1
 release_date: 2026-04-20
 benchmark_version: 0.4.0.dev1
 task_count: 19
-source_sweep: v2026-4-19-full
-openclaw_version: 2026.4.15-beta.1
 
 description: |
   ClawBench Core v1 — a curated subset of 19 tasks from the internal
@@ -20,39 +18,27 @@ description: |
   reference ranking with 0 inversions and min adjacent-rank gap of
   0.0049 (well above the ~0.002 seed-noise floor).
 
-established_ranking:
-  - rank: 1
-    model: anthropic/claude-opus-4-6
-    display: Claude Opus 4.6
-    score: 0.8137
-  - rank: 2
-    model: anthropic/claude-opus-4-7
-    display: Claude Opus 4.7
-    score: 0.7824
-  - rank: 3
-    model: openai/gpt-5.4
-    display: GPT 5.4
-    score: 0.7647
-  - rank: 4
-    model: anthropic/claude-sonnet-4-6
-    display: Claude Sonnet 4.6
-    score: 0.7597
-  - rank: 5
-    model: openrouter/minimax/minimax-m2.7
-    display: MiniMax M2.7
-    score: 0.7475
-  - rank: 6
-    model: google/gemini-3.1-pro-preview
-    display: Gemini 3.1 Pro
-    score: 0.7408
-  - rank: 7
-    model: openrouter/qwen/qwen3.6-plus
-    display: Qwen 3.6 Plus
-    score: 0.7030
-  - rank: 8
-    model: openrouter/moonshotai/kimi-k2.5
-    display: Kimi K2.5
-    score: 0.6800
+selection_basis:
+  description: |
+    The 19 tasks below were chosen via greedy task selection from the
+    v2026-4-19-full archive so that the cross-model mean reproduces
+    the reference 8-model ordering with 0 inversions and a min
+    adjacent-rank gap of 0.0049 (~2.5x the seed-noise floor).
+  reference_models:
+    - anthropic/claude-opus-4-6
+    - anthropic/claude-opus-4-7
+    - openai/gpt-5.4
+    - anthropic/claude-sonnet-4-6
+    - openrouter/minimax/minimax-m2.7
+    - google/gemini-3.1-pro-preview
+    - openrouter/qwen/qwen3.6-plus
+    - openrouter/moonshotai/kimi-k2.5
+  notes: |
+    Numerical scores intentionally omitted from this manifest. They
+    are openclaw-version-, provider-routing-, and seed-dependent;
+    publishing them would mislead anyone treating them as a stable
+    reference. Run the bench against your own configuration to
+    establish your own baseline.
 
 coverage:
   tiers:

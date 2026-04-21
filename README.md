@@ -18,7 +18,7 @@ license: mit
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB.svg?style=flat-square)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 [![Core v1: 19 tasks](https://img.shields.io/badge/Core%20v1-19%20tasks-blue.svg?style=flat-square)](tasks-public/)
-[![Reproducible](https://img.shields.io/badge/docker%20base-pinned-success.svg?style=flat-square)](Dockerfile)
+[![Diagnostics](https://img.shields.io/badge/diagnostics-dynamical-blueviolet.svg?style=flat-square)](#3-dynamical-systems-diagnostics-how-agents-fail-not-just-whether)
 [![HF Dataset](https://img.shields.io/badge/HF-dataset-yellow.svg?style=flat-square)](https://huggingface.co/datasets/ScoootScooob/clawbench-results)
 
 </div>
@@ -35,7 +35,7 @@ A reproducibility-first public release of the benchmark, informed by a full 8-mo
 | **Variance decomposition** | Measures and reports seed-noise vs capability-signal ratio per task | **47% of 40-task variance is seed noise** — we quantify it; most benchmarks hide it |
 | **Dynamical-systems diagnostics** | Per-run regime classification (trapped / limit-cycle / diffusive / mixed) | Reveals *how* agents fail, not just whether. Inspired by Markov-kernel / attractor-basin framework |
 | **Constraint Index C(q)** | Principled task-weighting via participation ratio + entropy + Bayes prediction | Distinguishes "everyone converges" from "everyone diverges" tasks — enables honest weighted ranking |
-| **Docker base pinning** | `FROM ghcr.io/openclaw/openclaw:2026.4.15-beta.1` (not `:latest`) | Platform drift across OpenClaw 4.9 → 4.15-beta.1 shifted scores by **+0.13 to +0.29** — pinning eliminates this |
+| **Reproducibility-first infrastructure** | Per-container state isolation, judge-infra rejudge pipeline, documented OpenRouter-routing caveats | Eliminates the cascading-failure / silent-judge-error patterns that bias most agent benchmarks |
 
 All of it lives in `scripts/` and `tasks-public/` — auditable code, not opaque numbers.
 
@@ -139,10 +139,10 @@ The v4-19-full sweep exposed multiple failure modes that silently bias numbers i
 
 - **Shared state dir contamination** — accumulated `agents/` cruft across sequential sweeps caused `RPC agents.create timed out` cascades. Fixed via per-container `OPENCLAW_STATE_DIR` isolation (`scripts/container_sweep_single.sh`).
 - **Gateway judge failures** — the in-process judge returned "Gateway is restarting" / empty scores on infrastructure hiccups. Fixed via direct-API rejudge pipeline (`scripts/rejudge_all.py`).
-- **Moving Docker base tag** — `FROM ghcr.io/openclaw/openclaw:latest` pulled different versions across rebuilds; platform drift alone shifted scores by +0.13 to +0.29. Fixed via pinned base (`FROM ghcr.io/openclaw/openclaw:2026.4.15-beta.1`).
-- **OpenRouter provider routing** — slug `z-ai/glm-5.1` canonically routes to different backing models over time. GLM 5.1 scored 0.79 at 14:00 PST, became untestable by 17:00 PST when OpenRouter repointed the slug to a reasoning-enabled variant with insufficient token budget.
+- **OpenRouter provider routing** — slug `z-ai/glm-5.1` canonically routes to different backing models over time. GLM 5.1 scored 0.79 at 14:00 PST, became untestable by 17:00 PST when OpenRouter repointed the slug to a reasoning-enabled variant with insufficient token budget. Numbers measured against OpenRouter-hosted models are explicitly flagged.
+- **Platform version drift** — OpenClaw 4.9 → 4.15-beta.1 shifted scores by +0.13 to +0.29 across all models. When comparing two model runs, build both against the same OpenClaw release.
 
-All of these are documented in code + commit messages. The pinned Dockerfile + state-isolation patch turn a flaky harness into a reproducible one.
+All of these are documented in code + commit messages. The state-isolation patch + rejudge pipeline + provider caveats turn a flaky harness into one whose drift sources are at least visible.
 
 ---
 
@@ -283,7 +283,7 @@ Being honest about what reproduces and what doesn't:
 
 - **Fair comparison audit** — given an archive dir, `scripts/audit_runs.py` produces identical numbers every time.
 - **Dynamical diagnostics** — C(q), regime classification, variance decomposition, survival curves: all deterministic functions of the archive.
-- **Rankings at the aggregate level** — top-cluster ranking stable across multiple sweeps under pinned OpenClaw version + direct-API models.
+- **Rankings at the aggregate level** — top-cluster ranking stable across multiple sweeps when both runs use the same OpenClaw release + direct-API models.
 
 ### What drifts
 
@@ -291,28 +291,32 @@ Being honest about what reproduces and what doesn't:
 - **OpenRouter-served models** — `openrouter/*` model slugs can silently re-route to different underlying providers. We observed GLM 5.1 at 0.79 then 0.33 within hours as OpenRouter flipped its backing provider. Pin to canonical versions (e.g., `z-ai/glm-5.1-20260406`) for stable measurement.
 - **OpenClaw platform drift** — 4.9 → 4.15-beta.1 shifted scores by +0.13 to +0.29 across all models. 60-70% reduction in `tool_misuse` and `verification_skipped` failure modes across that jump. Pin the base to reproduce published numbers.
 
-### The pinning we did
+### Mitigating the drift
 
-```dockerfile
-FROM ghcr.io/openclaw/openclaw:2026.4.15-beta.1
-# SHA256: 869e5e0ec27099573c54c0a8cdecfdd0970aa98c8c41f2bbd1cb06b59450d90e
+Build both sides of any comparison from the same source state:
+
+```bash
+docker build -t clawbench .
+docker run --rm --entrypoint openclaw clawbench --version
+# -> records the OpenClaw version of THIS build
 ```
 
-Before pinning, every rebuild could silently pull a different OpenClaw release. Now it can't.
+When publishing scores, record the OpenClaw version your image
+resolved to and treat numbers from a different version as separate
+populations.
 
 ---
 
 ## Quick start
 
-### Build the reference image (pinned)
+### Build the image
 
 ```bash
 git clone git@github.com:scoootscooob/clawbench.git && cd clawbench
-docker build -t clawbench:core-v1 .
+docker build -t clawbench .
 
-# Verify the OpenClaw version:
-docker run --rm --entrypoint openclaw clawbench:core-v1 --version
-# -> OpenClaw 2026.4.15-beta.1
+# Record the OpenClaw version baked in (for reproducibility):
+docker run --rm --entrypoint openclaw clawbench --version
 ```
 
 ### Run Core v1 on a model
@@ -436,7 +440,7 @@ clawbench/
 │
 ├── profiles/                       # v0.5 plugin profile YAMLs
 ├── tests/                          # 107 tests
-├── Dockerfile                      # Pinned to OpenClaw 2026.4.15-beta.1
+├── Dockerfile                      # Layered on ghcr.io/openclaw/openclaw:latest
 ├── CLAWBENCH_V0_4_SPEC.md          # Full specification
 └── PARTNER_TRACE_SPEC.md           # Trace interchange format
 ```
@@ -455,7 +459,7 @@ clawbench/
 | **Failure taxonomy** | ✓ 13 deterministic modes | Binary pass/fail | Binary | None |
 | **LLM judge role** | Capped 10%, gated on deterministic floor | Not used | Not used | Primary scorer |
 | **Configuration diagnostics** | ✓ Fingerprint, predict, explain, recommend | No | No | No |
-| **Docker base pinning** | ✓ pinned to 2026.4.15-beta.1 | Usually unpinned | Not container-based | Varies |
+| **State-isolation per run** | ✓ per-container OPENCLAW_STATE_DIR | No | No | No |
 | **Multiple runs per task** | 3 runs mandatory, statistical tests | Usually 1 | Varies | Usually 1 |
 | **Provider-routing caveats** | ✓ documented (OpenRouter drift) | Not flagged | Not flagged | Not flagged |
 | **Real tool composition** | ✓ Browser + code + memory + cron + delegation | Code only | Code only | Varies |
@@ -480,7 +484,7 @@ Key test invariants:
 
 | Version | Date | Summary |
 |:---:|---|---|
-| **Core v1** | 2026-04-20 | 19-task public release; 8-model reference leaderboard; dynamical-systems diagnostics; Docker base pinning |
+| **Core v1** | 2026-04-20 | 19-task signal-curated public release; dynamical-systems diagnostics (C(q), regimes, survival, SNR-weighted); per-container state isolation; rejudge pipeline |
 | v0.5 | earlier | Configuration Diagnostic (fingerprint, predict, fANOVA); plugin-native ablation |
 | v0.4 | earlier | 4-axis scoring with gated judge; 13-mode failure taxonomy; Partner Trace Spec |
 

@@ -14,25 +14,20 @@ selection: iteratively drop tasks that either (a) introduce ranking
 inversions vs the reference ordering or (b) have near-zero cross-model
 SNR and add only noise.
 
-## Established ranking (from v4-19-full sweep)
+## Selection criteria
 
-Mean run_score across the 19 tasks:
+The 19-task subset was chosen so that, on the v2026-4-19-full archive
+of 8 frontier models:
 
-| Rank | Model | Score |
-|:---:|---|:---:|
-| 1 | Claude Opus 4.6 | 0.8137 |
-| 2 | Claude Opus 4.7 | 0.7824 |
-| 3 | GPT 5.4 | 0.7647 |
-| 4 | Claude Sonnet 4.6 | 0.7597 |
-| 5 | MiniMax M2.7 | 0.7475 |
-| 6 | Gemini 3.1 Pro | 0.7408 |
-| 7 | Qwen 3.6 Plus | 0.7030 |
-| 8 | Kimi K2.5 | 0.6800 |
+- The mean ranking has **0 inversions** vs the established 8-model order.
+- The min adjacent-rank gap is **0.0049** — well above the ~0.002
+  seed-noise floor estimated from inter-run variance.
+- All 5 tiers and 6 task families remain represented.
 
-- **0 ranking inversions** on the 19-task mean.
-- **Min adjacent-rank gap: 0.0049** (well above the ~0.002 seed-noise
-  floor estimated from inter-run variance).
-- **Top-to-bottom spread: 0.134** (vs 0.097 for smaller robust sets).
+Specific reference scores intentionally omitted from this README; they
+are version-, provider-, and infra-dependent and would mislead anyone
+reading them as a stable comparison number. Run the bench yourself
+against your own configuration.
 
 ## Coverage
 
@@ -56,35 +51,17 @@ tasks-public/
 └── assets/                # 19 asset packs (verifier scripts + fixtures)
 ```
 
-## Build the reference Docker image
-
-The repo `Dockerfile` pins to the exact OpenClaw base that produced
-the Core v1 reference numbers:
-
-```
-FROM ghcr.io/openclaw/openclaw:2026.4.15-beta.1
-```
-
-Image SHA256: `869e5e0ec27099573c54c0a8cdecfdd0970aa98c8c41f2bbd1cb06b59450d90e`
-Base created: 2026-04-15T19:42 UTC.
-
-Build it:
+## Build the Docker image
 
 ```bash
-docker build -t clawbench:core-v1 .
+docker build -t clawbench .
 ```
 
-Verify the OpenClaw version inside matches:
-
-```bash
-docker run --rm --entrypoint openclaw clawbench:core-v1 --version
-# Expected: OpenClaw 2026.4.15-beta.1
-```
-
-If you measure against a newer OpenClaw, numbers will drift (we saw
-+0.13 to +0.29 per model going from 4.9 to 4.15-beta.1). Pin the base
-to reproduce the reference; bump the base + re-run the full sweep to
-produce a new reference.
+The repo `Dockerfile` tracks `ghcr.io/openclaw/openclaw:latest` so the
+benchmark always builds against the current OpenClaw release. Note
+that platform upgrades can shift scores (we observed +0.13 to +0.29
+per model going from 4.9 → 4.15-beta.1) — when comparing two model
+runs, build them against the same OpenClaw release.
 
 ## How to run Core v1
 
@@ -127,7 +104,8 @@ your ClawBench config. See MANIFEST.yaml for a programmatic list.
   2026-04-20 14:00 and 17:00 PST. Pin to canonical model versions
   (e.g. `z-ai/glm-5-turbo-20260315`) for stable measurement.
 - **OpenClaw platform version matters.** Upgrading from 4.9 → 4.15-beta.1
-  shifted scores by +0.13 to +0.29 across models. Pin via Docker tag.
+  shifted scores by +0.13 to +0.29 across models. Build both sides of
+  any comparison from the same OpenClaw release.
 - **Judge scores** come from Claude Sonnet 4.6 via direct Anthropic
   API (with a fallback from the gateway judge). Scores assume the
   judge is working correctly; re-judging broken runs may be required

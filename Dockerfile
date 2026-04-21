@@ -1,15 +1,7 @@
 # ClawBench HF Docker Space
 # Layer the benchmark harness on top of the official OpenClaw image.
-#
-# Base is PINNED to a specific OpenClaw release for reproducibility:
-# the Core v1 task set (tasks-public/) was measured against this exact
-# base. Upgrading from 4.9 -> 4.15-beta.1 shifted scores by +0.13 to
-# +0.29 across models in our sweep, so an unpinned ":latest" tag would
-# make published numbers non-reproducible.
-#
-# To measure against a newer OpenClaw, bump this tag and re-run the
-# reference sweep; Core v1 numbers are specific to 2026.4.15-beta.1.
-FROM ghcr.io/openclaw/openclaw:2026.4.15-beta.1
+
+FROM ghcr.io/openclaw/openclaw:latest
 
 USER root
 
