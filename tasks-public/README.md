@@ -56,6 +56,36 @@ tasks-public/
 └── assets/                # 19 asset packs (verifier scripts + fixtures)
 ```
 
+## Build the reference Docker image
+
+The repo `Dockerfile` pins to the exact OpenClaw base that produced
+the Core v1 reference numbers:
+
+```
+FROM ghcr.io/openclaw/openclaw:2026.4.15-beta.1
+```
+
+Image SHA256: `869e5e0ec27099573c54c0a8cdecfdd0970aa98c8c41f2bbd1cb06b59450d90e`
+Base created: 2026-04-15T19:42 UTC.
+
+Build it:
+
+```bash
+docker build -t clawbench:core-v1 .
+```
+
+Verify the OpenClaw version inside matches:
+
+```bash
+docker run --rm --entrypoint openclaw clawbench:core-v1 --version
+# Expected: OpenClaw 2026.4.15-beta.1
+```
+
+If you measure against a newer OpenClaw, numbers will drift (we saw
++0.13 to +0.29 per model going from 4.9 to 4.15-beta.1). Pin the base
+to reproduce the reference; bump the base + re-run the full sweep to
+produce a new reference.
+
 ## How to run Core v1
 
 Using the ClawBench harness:
