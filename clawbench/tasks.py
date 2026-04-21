@@ -51,7 +51,21 @@ def _resolve_tasks_dir() -> Path:
         if (container_candidate / "tier1").is_dir():
             return container_candidate
 
-    # 5. Give up and return the sibling path anyway — task loading will
+    # 5. Fall back to the public task release (tasks-public/) if present.
+    #    This lets CI / external contributors run the test suite without
+    #    the private dev-only tasks/ directory. The public Core release
+    #    uses the same on-disk layout as the private set.
+    for public_candidate in (
+        Path(__file__).parent.parent / "tasks-public",
+        Path.cwd() / "tasks-public",
+        Path("/home/node/app/tasks-public"),
+        Path("/home/user/app/tasks-public"),
+        Path("/app/tasks-public"),
+    ):
+        if (public_candidate / "tier1").is_dir():
+            return public_candidate
+
+    # 6. Give up and return the sibling path anyway — task loading will
     #    fail loudly instead of silently returning an empty task list.
     return sibling
 

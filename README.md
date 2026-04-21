@@ -41,27 +41,6 @@ All of it lives in `scripts/` and `tasks-public/` — auditable code, not opaque
 
 ---
 
-## Reference leaderboard — Core v1 (8 models, v2026-4-19-full sweep)
-
-Mean `run_score` across 19 tasks × 3 runs, OpenClaw 2026.4.15-beta.1, judge = Claude Sonnet 4.6:
-
-| Rank | Model | Score | Provider |
-|:---:|---|:---:|---|
-| 1 | **Claude Opus 4.6** | **0.8137** | Anthropic direct |
-| 2 | Claude Opus 4.7 | 0.7824 | Anthropic direct |
-| 3 | GPT 5.4 | 0.7647 | OpenAI direct |
-| 4 | Claude Sonnet 4.6 | 0.7597 | Anthropic direct |
-| 5 | MiniMax M2.7 | 0.7475 | OpenRouter |
-| 6 | Gemini 3.1 Pro | 0.7408 | Google direct |
-| 7 | Qwen 3.6 Plus | 0.7030 | OpenRouter |
-| 8 | Kimi K2.5 | 0.6800 | OpenRouter |
-
-**0 ranking inversions** on the 19-task mean; min adjacent-rank gap **0.0049** (well above the ~0.002 seed-noise floor).
-
-**Not included:** GLM 5.1 — scored 0.7967 at 2026-04-20 14:00 PST but OpenRouter's slug routing flipped to a reasoning-enabled variant hours later, producing `content: null` under default token budgets. Numbers measured against OpenRouter-hosted models are explicitly flagged as provider-routing-dependent (see [Reproducibility caveats](#reproducibility-caveats)).
-
----
-
 ## The problem with every agent benchmark
 
 You run a benchmark. Model A scores 73%. Model B scores 71%. You pick Model A.
