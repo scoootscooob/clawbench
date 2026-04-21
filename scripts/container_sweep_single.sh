@@ -44,6 +44,38 @@ mkdir -p "$CLAWBENCH_RUN_CACHE_DIR"
 # Scoped via env so we don't stomp on other Node processes (clawbench itself is python).
 export NODE_OPTIONS="--max-old-space-size=4096"
 
+# State-dir isolation: the shared /home/node/.openclaw mount accumulates cruft
+# across sweeps (agents/, workspace/, logs/, memory/, stale openclaw.json.*.tmp)
+# which triggers gateway hot-reload churn and cascading `RPC agents.create timed
+# out after 60s` failures. Give each sweep a pristine state dir that carries
+# over only the config (openclaw.json, identity/, devices/, exec-approvals.json,
+# tasks/, subagents/, flows/, cron/) and leaves runtime state empty.
+SRC_STATE="/home/node/.openclaw"
+FRESH_STATE="/tmp/openclaw-state-${SWEEP_LABEL}-$$"
+echo "[state-isolate] cloning config from $SRC_STATE to $FRESH_STATE"
+mkdir -p "$FRESH_STATE"
+# Copy the main config (skip the .tmp/.bak/.clobbered/.pre-* cruft that can
+# confuse the loader — only the canonical openclaw.json is needed).
+if [ -f "$SRC_STATE/openclaw.json" ]; then
+  cp "$SRC_STATE/openclaw.json" "$FRESH_STATE/openclaw.json"
+fi
+if [ -f "$SRC_STATE/exec-approvals.json" ]; then
+  cp "$SRC_STATE/exec-approvals.json" "$FRESH_STATE/exec-approvals.json"
+fi
+# Carry over static config dirs — these are read-mostly and don't accumulate
+# per-run cruft. SKIP: agents/ workspace*/ logs/ memory/ cache/ browser/ canvas/
+# which all grow unboundedly across sweeps.
+for d in identity devices tasks subagents flows cron; do
+  if [ -d "$SRC_STATE/$d" ]; then
+    cp -r "$SRC_STATE/$d" "$FRESH_STATE/$d"
+  fi
+done
+# Ensure runtime dirs exist but are empty
+mkdir -p "$FRESH_STATE/agents" "$FRESH_STATE/workspace" "$FRESH_STATE/logs" "$FRESH_STATE/memory" "$FRESH_STATE/cache"
+export OPENCLAW_STATE_DIR="$FRESH_STATE"
+echo "[state-isolate] OPENCLAW_STATE_DIR=$OPENCLAW_STATE_DIR"
+du -sh "$FRESH_STATE" 2>/dev/null | sed 's/^/[state-isolate] size: /'
+
 # Map label -> cache subdir (matches what clawbench writes)
 case "$SWEEP_MODEL" in
   anthropic/claude-opus-4-7)        CACHE_SUB="anthropic_claude-opus-4-7" ;;
@@ -52,9 +84,12 @@ case "$SWEEP_MODEL" in
   anthropic/claude-sonnet-4-6)      CACHE_SUB="anthropic_claude-sonnet-4-6" ;;
   openai/gpt-5.4)                   CACHE_SUB="openai_gpt-5.4" ;;
   openai/gpt-5.2)                   CACHE_SUB="openai_gpt-5.2" ;;
+  google/gemini-3.1-pro-preview)    CACHE_SUB="google_gemini-3.1-pro-preview" ;;
   openrouter/z-ai/glm-5.1)          CACHE_SUB="openrouter_z-ai_glm-5.1" ;;
+  openrouter/qwen/qwen3.6-plus)     CACHE_SUB="openrouter_qwen_qwen3.6-plus" ;;
   openrouter/minimax/minimax-m2.7)  CACHE_SUB="openrouter_minimax_minimax-m2.7" ;;
   openrouter/moonshotai/kimi-k2.5)  CACHE_SUB="openrouter_moonshotai_kimi-k2.5" ;;
+  # kimi-k2.6 is not yet supported in the openclaw version under test — skip.
   *) CACHE_SUB="" ;;
 esac
 
@@ -130,4 +165,11 @@ echo "===== SINGLE-MODEL SWEEP END $(date '+%Y-%m-%d %H:%M:%S') ====="
 kill $GATEWAY_PID 2>/dev/null
 wait $GATEWAY_PID 2>/dev/null
 echo "gateway stopped"
+
+# Clean up the isolated state dir (don't accumulate /tmp cruft across sweeps).
+if [ -n "${FRESH_STATE:-}" ] && [ -d "$FRESH_STATE" ]; then
+  echo "[state-isolate] removing $FRESH_STATE"
+  rm -rf "$FRESH_STATE"
+fi
+
 exit $status
