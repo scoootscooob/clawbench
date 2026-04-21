@@ -1,0 +1,91 @@
+{
+  "venues": [
+    {
+      "id": "fushimi_inari",
+      "name": "Fushimi Inari Shrine",
+      "type": "landmark",
+      "cost_usd": 0,
+      "vegetarian_friendly": true,
+      "mobility_friendly": false,
+      "notes": "Famous torii gates; the full hike is steep, but the lower shrine area is accessible"
+    },
+    {
+      "id": "kinkaku_ji",
+      "name": "Kinkaku-ji (Golden Pavilion)",
+      "type": "landmark",
+      "cost_usd": 5,
+      "vegetarian_friendly": true,
+      "mobility_friendly": true,
+      "notes": "Flat path around the pond"
+    },
+    {
+      "id": "arashiyama_bamboo",
+      "name": "Arashiyama Bamboo Grove",
+      "type": "landmark",
+      "cost_usd": 0,
+      "vegetarian_friendly": true,
+      "mobility_friendly": true,
+      "notes": "Flat paved path"
+    },
+    {
+      "id": "nishiki_market",
+      "name": "Nishiki Market",
+      "type": "food",
+      "cost_usd": 25,
+      "vegetarian_friendly": true,
+      "mobility_friendly": true,
+      "notes": "Indoor covered market"
+    },
+    {
+      "id": "shojin_ryori_kyoto",
+      "name": "Shoryori Tessenan",
+      "type": "restaurant",
+      "cost_usd": 45,
+      "vegetarian_friendly": true,
+      "mobility_friendly": true,
+      "notes": "Traditional Buddhist vegetarian cuisine"
+    },
+    {
+      "id": "wagyu_house",
+      "name": "Wagyu House Kyoto",
+      "type": "restaurant",
+      "cost_usd": 80,
+      "vegetarian_friendly": false,
+      "mobility_friendly": true
+    },
+    {
+      "id": "ryokan_central",
+      "name": "Ryokan Central Kyoto",
+      "type": "lodging",
+      "cost_usd": 220,
+      "vegetarian_friendly": true,
+      "mobility_friendly": true,
+      "notes": "3 nights"
+    },
+    {
+      "id": "philosophers_path",
+      "name": "Philosopher's Path",
+      "type": "landmark",
+      "cost_usd": 0,
+      "vegetarian_friendly": true,
+      "mobility_friendly": false,
+      "notes": "2km walk along canal \u2014 long for limited mobility"
+    },
+    {
+      "id": "kyoto_railway_museum",
+      "name": "Kyoto Railway Museum",
+      "type": "landmark",
+      "cost_usd": 12,
+      "vegetarian_friendly": true,
+      "mobility_friendly": true
+    },
+    {
+      "id": "tea_ceremony_class",
+      "name": "Camellia Tea Ceremony",
+      "type": "experience",
+      "cost_usd": 35,
+      "vegetarian_friendly": true,
+      "mobility_friendly": true
+    }
+  ]
+}

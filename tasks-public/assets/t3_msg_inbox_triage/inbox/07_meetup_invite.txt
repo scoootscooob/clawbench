@@ -1,0 +1,9 @@
+From: events@localmeetup.example
+Subject: AI engineering meetup next Thursday
+
+Hi,
+
+Reminder that our monthly meetup is happening next Thursday at 6pm.
+Topic: production LLM observability. Free pizza.
+
+RSVP at the link below if interested.
