@@ -15,7 +15,7 @@ license: mit
 
 **Rigorous agent evaluation. Signal-curated tasks. Dynamical-systems diagnostics.**
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB.svg?style=flat-square)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB.svg?style=flat-square)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 [![Core v1: 19 tasks](https://img.shields.io/badge/Core%20v1-19%20tasks-blue.svg?style=flat-square)](tasks-public/)
 [![Diagnostics](https://img.shields.io/badge/diagnostics-dynamical-blueviolet.svg?style=flat-square)](#3-dynamical-systems-diagnostics-how-agents-fail-not-just-whether)
@@ -104,20 +104,56 @@ Core v1 drops the noisy tasks and reports variance decomposition alongside ranki
 
 Inspired by *"When LLMs Are Dreaming, Where Do They Go?"* — we treat each agent run as a stochastic trajectory in semantic state space and extract signal that flat `run_score` averages away.
 
-| Diagnostic | Formula / Method | Reveals |
-|---|---|---|
-| **Constraint Index C(q)** | `-z(PR) - z(entropy) + z(BOPS)` over response embeddings | Which tasks converge to one answer vs diverge openly |
-| **Regime classification** | Trajectory drift / recurrence / support-volume thresholds | Per-run dynamical signature (trapped / limit-cycle / diffusive) |
-| **Survival analysis** | `S(t) = P(T_F > t)` where T_F = first empty assistant turn | Per-turn failure rates; long-horizon capability |
-| **SNR-weighted ranking** | `w(task) = SNR × |C(q)|`, winsorized at p95 | Headline metric that weights tasks by their signal density |
-| **Variance decomposition** | `Var(score) = Var_seeds + Var_models` per task | Separate capability signal from coin-flip noise |
+Current code-path formulas:
+
+```text
+Per assistant step t:
+x_t = [tool_family_proportions(6), error_flag, normalized_tokens, normalized_text_len, progress]
+drift_t = cosine_distance(x_0, x_t)
+step_t = cosine_distance(x_{t-1}, x_t)
+
+Task-level Constraint Index:
+PR(q) = tr(Σ_q)^2 / tr(Σ_q^2)
+H(q) = -Σ_i p_i log2 p_i,   p_i = λ_i / Σ_j λ_j,   λ = eigvals(Σ_q)
+BOPS(q) = mean_m mean_{i<j} cos(v_{q,m,i}, v_{q,m,j})
+C(q) = -z(PR(q)) - z(H(q)) + z(BOPS(q))
+
+Per-run constraint index used inside the regime classifier:
+PR_run = 1 / Σ_i p_i^2
+constraint_index_run = 1 - (PR_run - 1) / (d - 1)
+
+Variance decomposition:
+seed_var(q) = mean_m Var(run_score_{q,m,*})
+cap_var(q) = Var_m Mean(run_score_{q,m,*})
+SNR(q) = cap_var(q) / (seed_var(q) + 1e-9)
+capability_fraction = mean_q cap_var(q) / (mean_q cap_var(q) + mean_q seed_var(q))
+
+Survival:
+T_F = first assistant turn with empty text and no tool calls,
+      else final assistant turn if run_score < 0.7 and delivery_outcome in {fail, partial}
+S(t) = P(T_F > t)
+h(t) = P(T_F = t | T_F >= t)
+```
+
+Implemented regime classifier in `clawbench/dynamics.py`:
+
+```text
+trapped      if H_tools < 0.5 or (error_rate > 0.6 and std(drift) < 0.05)
+convergent   if std(drift_last_quartile) < 0.1 and mean(step_last_quartile) < 0.15 and error_rate < 0.2
+diffusive    if H_tools > 1.5 and error_rate < 0.15 and constraint_index_run < 0.8
+chaotic      if H_tools > 2.0 and var(step[1:]) > 0.02
+limit_cycle  if max autocorr(centered step[1:], lags 2..5) > 0.3
+unknown      otherwise, or <3 assistant turns
+```
+
+The task-level `C(q)` uses a normalized bag-of-words response vector built from the full assistant trajectory text plus tool-call names and compacted inputs, not just the last assistant turn.
 
 From the v4-19 sweep data:
 - **Gemini 3.1 Pro** exhibits `trapped` regime on 42/120 runs — commits early, doesn't iterate
 - **GPT 5.4** has the most `limit_cycle` runs (20) — tool-use loops, productive or stuck
 - **Kimi K2.5** dies at median turn 3 (worst survival); **GPT 5.4** survives to turn 8 at 60% rate (best)
 
-All scripts under `scripts/` — pure numpy + scipy, no torch / sentence-transformers required, runs on any archive dir.
+All scripts under `scripts/` run on cached per-run JSONs with plain numpy-based tooling; no torch or sentence-transformers required.
 
 ### 4. We ablate configurations, not just models
 
@@ -264,9 +300,12 @@ The `1/y_i^2` term means the worst score dominates. A configuration scoring 0.85
 Flat-mean compresses frontier model gaps. An alternative that weights tasks by their signal density:
 
 ```
-weight(task) = max(0, SNR(task)) × |C(q)(task)|            # unbounded
-weight_winsorized(task) = min(weight(task), p95)            # prevent single-task dominance
-score(model) = Σ weight × mean_run_score / Σ weight
+w_q = max(0, SNR(q)) × |C(q)|
+w_q^wins = min(w_q, p95({w_q}))
+
+flat_score(model) = mean_q mean_run_score(model, q) over covered tasks
+weighted_score(model) = Σ_q w_q mean_run_score(model, q) / Σ_q w_q
+winsorized_score(model) = Σ_q w_q^wins mean_run_score(model, q) / Σ_q w_q^wins
 ```
 
 Under SNR × |C(q)| winsorized on the same 1,080-run archive, **Opus 4.7 ranks #1** (instead of Opus 4.6 under flat mean) and **GPT 5.4 drops from #3 to #7** — its task-specific cliffs (0.16 on `t3-feature-export`) fall on the highest-signal tasks. This exposes what the flat mean averages away.
@@ -349,27 +388,48 @@ clawbench run \
   -o results/opus46_core_v1.json
 ```
 
-### Analyze an archive with the diagnostic suite
+### Analyze a real archive
 
 ```bash
-# 1. Aggregate coverage + fair-comparison audit
+# Fair-comparison audit
 python3 scripts/audit_runs.py
-
-# 2. Rejudge any judge-infrastructure failures via direct Anthropic API
-python3 scripts/rejudge_all.py \
-  --drift-dir data/drift_2026-04-19-full \
-  --archive-dir data/run_cache_archive/v2026-4-19-full
-
-# 3. Generate the fair comparison report
 python3 scripts/generate_fair_report.py --tag v2026-4-19-full
 
-# 4. Dynamical-systems diagnostics (C(q), regimes, survival, SNR-weighted)
-.venv/bin/python3 scripts/compute_constraint_index.py
-.venv/bin/python3 scripts/classify_regimes.py
-.venv/bin/python3 scripts/variance_decomp.py
-.venv/bin/python3 scripts/survival_analysis.py
-.venv/bin/python3 scripts/snr_weighted_ranking.py
-.venv/bin/python3 scripts/generate_dynamical_report.py
+# Posterior dynamics + ranking from cached per-run JSONs
+python3 scripts/run_posterior_dynamics_pipeline.py \
+  --archive-dir .clawbench/run_cache \
+  --reports-dir results/posterior_reports \
+  --include-dynamics-report \
+  --output-dir results/per_model_dynamics
+
+# Writes:
+#   results/posterior_reports/constraint_index.json
+#   results/posterior_reports/regimes.json
+#   results/posterior_reports/variance_decomposition.json
+#   results/posterior_reports/survival_analysis.json
+#   results/posterior_reports/snr_weighted_ranking.json
+#   results/posterior_reports/EVAL_REPORT_DYNAMICAL.md
+#   results/per_model_dynamics/<safe_model_name>/dynamics.json
+#   results/per_model_dynamics/<safe_model_name>/*.png
+```
+
+If you only want one model's offline dynamics bundle:
+
+```bash
+clawbench dynamics-report \
+  --archive-dir .clawbench/run_cache \
+  --model ollama/gpt-oss:20b \
+  --output-dir results/gptoss_dynamics
+
+# Quick CI path: skip plot rendering
+clawbench dynamics-report \
+  --archive-dir .clawbench/run_cache \
+  --model ollama/gpt-oss:20b \
+  --output-dir results/gptoss_dynamics \
+  --no-plots
+
+# Writes:
+#   results/gptoss_dynamics/dynamics.json
 ```
 
 ### Running locally with small models (Ollama)
@@ -379,7 +439,24 @@ A single consumer GPU running an open-weight model is enough to develop plugin p
 ```bash
 ollama pull gpt-oss:20b
 export OPENCLAW_GATEWAY_TOKEN=<your-gateway-token>
-clawbench run --model ollama/gpt-oss:20b --task t1-fs-quick-note --runs 1
+export CLAWBENCH_RUN_CACHE_DIR=$PWD/.clawbench/run_cache
+
+# Real benchmark run + immediate per-run dynamics bundle
+clawbench run \
+  --model ollama/gpt-oss:20b \
+  --task t1-fs-quick-note \
+  --runs 1 \
+  --dynamics \
+  -o results/ollama_smoke.json
+
+# Optional second local model
+ollama pull qwen3.5:27b
+
+# Offline posterior analysis reads CLAWBENCH_RUN_CACHE_DIR
+python3 scripts/run_posterior_dynamics_pipeline.py \
+  --archive-dir .clawbench/run_cache \
+  --reports-dir results/posterior_reports
+
 clawbench diagnose profiles/local_ollama_gpt_oss.yaml
 ```
 
@@ -415,6 +492,9 @@ clawbench/
 │   ├── profile.py                  # v0.5 plugin fingerprinting
 │   ├── diagnostic.py               # Configuration Diagnostic report
 │   ├── factor_analysis.py          # fANOVA factor importance
+│   ├── dynamics.py                 # Trajectory metrics + sensitivity analysis
+│   ├── dynamics_archive.py         # Cached-run loading + offline report assembly
+│   ├── dynamics_plots.py           # Offline dynamics visualizations
 │   └── cli.py                      # CLI entry points
 │
 ├── tasks-public/                   # Core v1 PUBLIC release (19 tasks)
@@ -431,6 +511,7 @@ clawbench/
 │   ├── audit_per_run.py            # Per-run cross-model audit
 │   ├── rejudge_all.py              # Direct-API rejudge for broken gateway judges
 │   ├── generate_fair_report.py     # Fair N-model comparison report
+│   ├── run_posterior_dynamics_pipeline.py # One-shot posterior analysis driver
 │   ├── compute_constraint_index.py # C(q) per task
 │   ├── classify_regimes.py         # Per-run dynamical regime classifier
 │   ├── variance_decomp.py          # Seed-noise vs capability-signal decomposition
@@ -439,7 +520,7 @@ clawbench/
 │   └── generate_dynamical_report.py # Combined dynamical-systems report
 │
 ├── profiles/                       # v0.5 plugin profile YAMLs
-├── tests/                          # 107 tests
+├── tests/                          # Test suite
 ├── Dockerfile                      # Layered on ghcr.io/openclaw/openclaw:latest
 ├── CLAWBENCH_V0_4_SPEC.md          # Full specification
 └── PARTNER_TRACE_SPEC.md           # Trace interchange format
@@ -469,7 +550,7 @@ clawbench/
 ## Testing
 
 ```bash
-python -m pytest -q     # 107 tests
+python -m pytest -q
 ```
 
 Key test invariants:

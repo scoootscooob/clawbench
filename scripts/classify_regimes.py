@@ -1,140 +1,112 @@
-"""Classify each archived run's dynamical regime from its turn trajectory.
+#!/usr/bin/env python3
+"""Classify posterior run trajectories into dynamical regimes.
 
-Following "When LLMs Are Dreaming..." §What We Expect to See:
+We embed each assistant turn using bag-of-words text plus tool-call summaries,
+then compute simple geometric proxies:
 
-  TRAPPED/ATTRACTOR   — low support (Vol_log), high recurrence, high BOPS.
-                        Agent converged to a point; may be good (solved it)
-                        or bad (got stuck in a loop on a single idea).
+    drift_mean = mean ||x_t - x_{t-1}||
+    from_start = max ||x_t - x_0||
+    recurrence = max cosine(x_i, x_j) for non-adjacent turns
+    vol_log    = log det(Sigma + eps I)
 
-  LIMIT-CYCLE         — high recurrence + bounded drift + quasi-periodic revisits.
-                        Agent loops between a few states.
-
-  DIFFUSIVE/WANDERING — growing support, rising drift, low recurrence.
-                        Agent explores without converging; often "goal drift".
-
-  SENSITIVE           — (requires paraphrased-pair runs; skip here.)
-
-  TOO-SHORT           — trajectory < 3 assistant turns; can't classify dynamics.
-
-We work in a TF-IDF bag-of-words embedding space (same vocab as C(q)),
-with each turn's state vector = its assistant text + tool-call args.
-
-Metrics per run:
-  - drift_mean:  mean ||e_t − e_{t−1}|| across turns
-  - from_start:  max ||e_t − e_0||  (farthest the run drifted from origin)
-  - recurrence:  max_{i<j, j−i≥2} cos(e_i, e_j)  — best return-after-gap match
-  - vol_log:     log det(Σ + εI) over turn states — support volume proxy
-
-Classifier rules (tuned empirically on the distribution):
-  if n_turns < 3                              → too_short
-  elif drift_mean < 0.15 and vol_log < −6     → trapped
-  elif recurrence > 0.80 and drift_mean < 0.25 → limit_cycle
-  elif drift_mean > 0.35 and vol_log > −3     → diffusive
-  else                                         → mixed
-
-Output: reports/regimes.json with per-run classification.
-
-Usage:
-    .venv/bin/python3 scripts/classify_regimes.py
+Runs are then bucketed into coarse regimes such as trapped, limit_cycle, and
+diffusive using quartile-based thresholds estimated from the observed archive.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent.parent
-ARCH = ROOT / "data" / "run_cache_archive" / "v2026-4-19-full"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-MODELS = [
-    "anthropic_claude-opus-4-6", "anthropic_claude-opus-4-7",
-    "anthropic_claude-sonnet-4-6", "openai_gpt-5.4",
-    "google_gemini-3.1-pro-preview", "openrouter_z-ai_glm-5.1",
-    "openrouter_minimax_minimax-m2.7", "openrouter_moonshotai_kimi-k2.5",
-    "openrouter_qwen_qwen3.6-plus",
-]
+from clawbench.dynamics_archive import load_task_runs_by_model
 
 WORD_RE = re.compile(r"[a-z]{3,}")
-STOPWORDS = set("the and that with this have from what your will can but not "
-                "was will are been one would there been they will their has "
-                "had its were only some than about these which into also each "
-                "when where them how who them very much more most other then "
-                "here such does like just make many like want need take".split())
+STOPWORDS = set(
+    "the and that with this have from what your will can but not "
+    "was are been one would there they their has had its were only some "
+    "than about these which into also each when where them how who very "
+    "much more most other then here such does like just make many want need take".split()
+)
 
 
 def tokenize(text: str) -> list[str]:
     return [w for w in WORD_RE.findall((text or "").lower()) if w not in STOPWORDS]
 
 
-def build_vocab(all_turn_texts: list[str], top_k: int = 500) -> dict[str, int]:
-    c = Counter()
-    for t in all_turn_texts:
-        c.update(set(tokenize(t)))
-    return {w: i for i, (w, _) in enumerate(c.most_common(top_k))}
+def build_vocab(texts: list[str], top_k: int = 500) -> dict[str, int]:
+    counter = Counter()
+    for text in texts:
+        counter.update(set(tokenize(text)))
+    return {w: i for i, (w, _) in enumerate(counter.most_common(top_k))}
 
 
 def vectorize(text: str, vocab: dict[str, int]) -> np.ndarray:
-    v = np.zeros(len(vocab), dtype=np.float32)
-    for w, c in Counter(tokenize(text)).items():
-        if w in vocab:
-            v[vocab[w]] = c
-    n = np.linalg.norm(v)
-    return v / n if n > 0 else v
+    vec = np.zeros(len(vocab), dtype=np.float32)
+    for word, cnt in Counter(tokenize(text)).items():
+        if word in vocab:
+            vec[vocab[word]] = cnt
+    norm = np.linalg.norm(vec)
+    return vec / norm if norm > 0 else vec
 
 
-def turn_texts(run_data: dict) -> list[str]:
-    """Extract one text string per assistant turn (text + tool-call summary)."""
+def turn_texts(run, fallback_any_message: bool = False) -> list[str]:
+    source = run.transcript.messages if fallback_any_message else run.transcript.assistant_messages
     out = []
-    for m in run_data.get("transcript", {}).get("messages", []):
-        if m.get("role") != "assistant":
-            continue
+    for msg in source:
         parts = []
-        if m.get("text"):
-            parts.append(m["text"])
-        for tc in (m.get("tool_calls") or []):
-            name = tc.get("name", "")
-            args_str = json.dumps(tc.get("arguments", {}))[:200]
-            parts.append(f"{name} {args_str}")
+        if msg.text:
+            parts.append(msg.text)
+        for tc in msg.tool_calls:
+            parts.append(tc.name)
+            if tc.input:
+                parts.append(json.dumps(tc.input, sort_keys=True)[:200])
         if parts:
             out.append(" ".join(parts))
     return out
 
 
-def trajectory_metrics(vecs: np.ndarray) -> dict:
-    """Compute dynamical metrics over a (n_turns, d) trajectory matrix."""
+def trajectory_metrics(vecs: np.ndarray) -> dict[str, float]:
+    """Compute drift, recurrence, and support-volume proxies for one run."""
     n = vecs.shape[0]
     if n < 2:
-        return {"n_turns": n, "drift_mean": 0.0, "from_start": 0.0,
-                "recurrence": 0.0, "vol_log": -12.0}
-    # Drift: consecutive distances
+        return {
+            "n_turns": float(n),
+            "drift_mean": 0.0,
+            "from_start": 0.0,
+            "recurrence": 0.0,
+            "vol_log": -12.0,
+        }
+
     diffs = np.linalg.norm(np.diff(vecs, axis=0), axis=1)
     drift_mean = float(diffs.mean())
-    # From start: max distance from turn 0
-    dists_from_0 = np.linalg.norm(vecs - vecs[0:1], axis=1)
-    from_start = float(dists_from_0.max())
-    # Recurrence: best non-adjacent cosine similarity (ignoring immediate neighbors)
+    from_start = float(np.linalg.norm(vecs - vecs[0:1], axis=1).max())
+
     recurrence = 0.0
     for i in range(n):
         for j in range(i + 2, n):
-            ni, nj = np.linalg.norm(vecs[i]), np.linalg.norm(vecs[j])
+            ni = np.linalg.norm(vecs[i])
+            nj = np.linalg.norm(vecs[j])
             if ni > 0 and nj > 0:
-                c = float(vecs[i] @ vecs[j] / (ni * nj))
-                if c > recurrence:
-                    recurrence = c
-    # Vol_log: log det of turn-state covariance
+                sim = float(vecs[i] @ vecs[j] / (ni * nj))
+                recurrence = max(recurrence, sim)
+
     if n >= 3:
-        Sigma = np.cov(vecs.T)
-        # Use log|Σ + εI|; since d is large (500) we take eigenvalues + clip
-        eigs = np.linalg.eigvalsh(Sigma + 1e-6 * np.eye(vecs.shape[1], dtype=np.float32))
+        sigma = np.cov(vecs.T)
+        eigs = np.linalg.eigvalsh(sigma + 1e-6 * np.eye(vecs.shape[1], dtype=np.float32))
         vol_log = float(np.log(np.clip(eigs, 1e-12, None)).sum())
     else:
         vol_log = -12.0
+
     return {
-        "n_turns": n,
+        "n_turns": float(n),
         "drift_mean": drift_mean,
         "from_start": from_start,
         "recurrence": recurrence,
@@ -142,109 +114,105 @@ def trajectory_metrics(vecs: np.ndarray) -> dict:
     }
 
 
-def classify(m: dict, thresholds: dict) -> str:
-    """Classify based on quartile thresholds of the actual distribution.
-
-    Thresholds (set empirically from observed distribution):
-      drift_low  = p25  drift_hi = p75
-      vol_low    = p25  vol_hi   = p75
-      rec_hi     = p75
-
-    Rules (priority order):
-      n_turns < 3             → too_short
-      drift < drift_low AND vol < vol_low  → trapped
-      rec > rec_hi AND drift < median       → limit_cycle
-      drift > drift_hi AND vol > vol_hi     → diffusive
-      else                                  → mixed
-    """
-    n = m["n_turns"]
-    if n < 3:
+def classify(metrics: dict[str, float], thresholds: dict[str, float]) -> str:
+    """Map trajectory metrics to a coarse regime label."""
+    n_turns = int(metrics["n_turns"])
+    if n_turns < 3:
         return "too_short"
-    d = m["drift_mean"]
-    rec = m["recurrence"]
-    vol = m["vol_log"]
-    if d < thresholds["drift_low"] and vol < thresholds["vol_low"]:
+    drift = metrics["drift_mean"]
+    recurrence = metrics["recurrence"]
+    vol = metrics["vol_log"]
+
+    if drift < thresholds["drift_low"] and vol < thresholds["vol_low"]:
         return "trapped"
-    if rec > thresholds["rec_hi"] and d < thresholds["drift_med"]:
+    if recurrence > thresholds["rec_hi"] and drift < thresholds["drift_med"]:
         return "limit_cycle"
-    if d > thresholds["drift_hi"] and vol > thresholds["vol_hi"]:
+    if drift > thresholds["drift_hi"] and vol > thresholds["vol_hi"]:
         return "diffusive"
     return "mixed"
 
 
 def main() -> None:
-    # First pass: collect turn texts to build vocab
+    parser = argparse.ArgumentParser(description="Classify cached run regimes")
+    parser.add_argument("--archive-dir", type=Path, default=Path(".clawbench/run_cache"))
+    parser.add_argument("--reports-dir", type=Path, default=Path("reports"))
+    parser.add_argument("--tier", choices=["tier1", "tier2", "tier3", "tier4", "tier5"], default=None)
+    args = parser.parse_args()
+
+    grouped = load_task_runs_by_model(args.archive_dir, tier=args.tier)
+    if not grouped:
+        raise SystemExit(f"No cached runs found under {args.archive_dir}")
+
     all_turn_texts: list[str] = []
-    run_turns: dict[tuple, list[str]] = {}
-    for model in MODELS:
-        for rf in (ARCH / model).rglob("run*.json"):
-            try:
-                d = json.loads(rf.read_text())
-            except Exception:
-                continue
-            task = rf.parent.name
-            run_idx = int(re.match(r"run(\d+)", rf.stem).group(1))
-            ts = turn_texts(d)
-            run_turns[(model, task, run_idx)] = ts
-            all_turn_texts.extend(ts)
+    run_turns: dict[str, list[str]] = {}
+
+    for model_name, task_runs in grouped.items():
+        for task_id, runs in task_runs.items():
+            for run in runs:
+                ts = turn_texts(run, fallback_any_message=False)
+                key = f"{model_name}/{task_id}/run{run.run_index}"
+                run_turns[key] = ts
+                all_turn_texts.extend(ts)
+
+    used_fallback_messages = False
+    if not all_turn_texts:
+        used_fallback_messages = True
+        all_turn_texts = []
+        run_turns = {}
+        for model_name, task_runs in grouped.items():
+            for task_id, runs in task_runs.items():
+                for run in runs:
+                    ts = turn_texts(run, fallback_any_message=True)
+                    key = f"{model_name}/{task_id}/run{run.run_index}"
+                    run_turns[key] = ts
+                    all_turn_texts.extend(ts)
+
+    if not all_turn_texts:
+        raise SystemExit("No usable turn text found in archive.")
 
     vocab = build_vocab(all_turn_texts, top_k=500)
-    print(f"Runs collected: {len(run_turns)}  vocab size: {len(vocab)}")
 
-    # Second pass: vectorize + compute metrics
-    per_run: dict[str, dict] = {}
+    per_run: dict[str, dict[str, float | str]] = {}
     for key, ts in run_turns.items():
-        model, task, run_idx = key
         if not ts:
             continue
-        vecs = np.stack([vectorize(t, vocab) for t in ts])
-        m = trajectory_metrics(vecs)
-        per_run[f"{model}/{task}/run{run_idx}"] = m
+        vecs = np.stack([vectorize(text, vocab) for text in ts])
+        per_run[key] = trajectory_metrics(vecs)
 
-    # Derive thresholds from actual distribution of n_turns>=3 runs
-    drifts = np.array([v["drift_mean"] for v in per_run.values() if v["n_turns"] >= 3])
-    recs = np.array([v["recurrence"] for v in per_run.values() if v["n_turns"] >= 3])
-    vols = np.array([v["vol_log"] for v in per_run.values() if v["n_turns"] >= 3])
-    thresholds = {
-        "drift_low": float(np.percentile(drifts, 25)),
-        "drift_med": float(np.percentile(drifts, 50)),
-        "drift_hi":  float(np.percentile(drifts, 75)),
-        "vol_low":   float(np.percentile(vols, 25)),
-        "vol_hi":    float(np.percentile(vols, 75)),
-        "rec_hi":    float(np.percentile(recs, 75)),
-    }
-    print(f"\nThresholds (quartile-based from observed distribution):")
-    for k, v in thresholds.items():
-        print(f"  {k:<12}  {v:>10.3f}")
+    eligible = [r for r in per_run.values() if int(r["n_turns"]) >= 3]
+    if eligible:
+        drifts = np.array([float(v["drift_mean"]) for v in eligible])
+        recs = np.array([float(v["recurrence"]) for v in eligible])
+        vols = np.array([float(v["vol_log"]) for v in eligible])
+        thresholds = {
+            "drift_low": float(np.percentile(drifts, 25)),
+            "drift_med": float(np.percentile(drifts, 50)),
+            "drift_hi": float(np.percentile(drifts, 75)),
+            "vol_low": float(np.percentile(vols, 25)),
+            "vol_hi": float(np.percentile(vols, 75)),
+            "rec_hi": float(np.percentile(recs, 75)),
+        }
+    else:
+        thresholds = {
+            "drift_low": 0.15,
+            "drift_med": 0.25,
+            "drift_hi": 0.35,
+            "vol_low": -6.0,
+            "vol_hi": -3.0,
+            "rec_hi": 0.8,
+        }
 
-    # Apply classifier with thresholds
-    for key in per_run:
-        per_run[key]["regime"] = classify(per_run[key], thresholds)
+    for key, metrics in per_run.items():
+        metrics["regime"] = classify(metrics, thresholds)
+        metrics["turn_source"] = "any_message" if used_fallback_messages else "assistant"
 
-    # Summary by regime
-    counts = Counter(v["regime"] for v in per_run.values())
-    print(f"\nRegime distribution (n={len(per_run)} runs):")
-    for regime, n in counts.most_common():
-        print(f"  {regime:<14} {n:>4}  ({100*n/len(per_run):>4.1f}%)")
+    args.reports_dir.mkdir(parents=True, exist_ok=True)
+    out = args.reports_dir / "regimes.json"
+    out.write_text(json.dumps(per_run, indent=2), encoding="utf-8")
 
-    # Per-model regime breakdown
-    print(f"\n{'Model':<10}  " + " ".join(f"{r:>11}" for r in ["too_short", "trapped", "limit_cycle", "diffusive", "mixed"]))
-    print("-" * 70)
-    pm_counts = defaultdict(Counter)
-    for key, v in per_run.items():
-        model = key.split("/")[0]
-        pm_counts[model][v["regime"]] += 1
-    for model in MODELS:
-        row = [f"{model.split('_')[-1][:9]:<10}"]
-        for r in ["too_short", "trapped", "limit_cycle", "diffusive", "mixed"]:
-            row.append(f"{pm_counts[model][r]:>11}")
-        print("  ".join(row))
-
-    # Write output
-    out = ROOT / "reports" / "regimes.json"
-    out.parent.mkdir(exist_ok=True)
-    out.write_text(json.dumps(per_run, indent=2))
-    print(f"\nWrote: {out}")
+    counts = Counter(str(v["regime"]) for v in per_run.values())
+    print(f"Wrote: {out}")
+    print(f"Regime counts: {dict(counts)}")
 
 
 if __name__ == "__main__":

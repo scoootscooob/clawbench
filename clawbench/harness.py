@@ -103,6 +103,7 @@ class BenchmarkHarness:
         self.concurrency = max(1, int(concurrency))
         self.browser_concurrency = max(1, int(browser_concurrency))
         self.repo_root = Path(__file__).parent.parent
+        self.last_task_runs: dict[str, list[TaskRunResult]] = {}
 
     async def run(self) -> BenchmarkResult:
         tasks = load_all_tasks(
@@ -148,6 +149,7 @@ class BenchmarkHarness:
                 f"({mean_run:.1f}s avg, concurrency={self.concurrency})[/dim]"
             )
 
+        self.last_task_runs = all_results
         return self._aggregate(tasks, all_results)
 
     async def _execute_runs(
