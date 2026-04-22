@@ -26,6 +26,15 @@ from clawbench.hub import (
     load_submission_rows_from_parquet,
     resolve_dataset_repo,
 )
+from clawbench.submission_models import (
+    CUSTOM_PRESET_LABEL,
+    PRESET_AUDIENCE_ALL,
+    PRESET_AUDIENCE_CHOICES,
+    PRESET_MODEL_MAP,
+    preset_labels_for_audience,
+    preset_models_for_audience,
+    resolve_model_selection,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("clawbench.app")
@@ -50,31 +59,6 @@ def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
 
 DEFAULT_RUNS_PER_TASK = _env_int("CLAWBENCH_DEFAULT_RUNS_PER_TASK", 3, minimum=1, maximum=10)
 DEFAULT_PARALLEL_LANES = _env_int("CLAWBENCH_DEFAULT_PARALLEL_LANES", 1, minimum=1, maximum=4)
-
-# ---------------------------------------------------------------------------
-# Preset models for quick submission
-# ---------------------------------------------------------------------------
-
-PRESET_MODELS = {
-    # All models verified working on HF Inference API (free with HF_TOKEN)
-    # Tested 2026-04-07 via router.huggingface.co/v1/chat/completions
-    #
-    # --- Chinese open-source ---
-    "GLM 5.1 (754B MoE)": "huggingface/zai-org/GLM-5.1",
-    "GLM 5 (400B MoE)": "huggingface/zai-org/GLM-5",
-    "Qwen3 32B": "huggingface/Qwen/Qwen3-32B",
-    "DeepSeek R1": "huggingface/deepseek-ai/DeepSeek-R1",
-    "Kimi K2 Instruct": "huggingface/moonshotai/Kimi-K2-Instruct",
-    "MiniMax M2.5": "huggingface/MiniMaxAI/MiniMax-M2.5",
-    # --- Google open-source ---
-    "Gemma 4 26B MoE": "huggingface/google/gemma-4-26B-A4B-it",
-    # --- Meta open-source ---
-    "Llama 3.3 70B": "huggingface/meta-llama/Llama-3.3-70B-Instruct",
-    "Llama 3.1 70B": "huggingface/meta-llama/Llama-3.1-70B-Instruct",
-    # --- Proprietary models (require runtime auth configured for the model provider) ---
-    "Claude Sonnet 4.6": "anthropic/claude-sonnet-4-6",
-    "Claude Opus 4.6": "anthropic/claude-opus-4-6",
-}
 
 # ---------------------------------------------------------------------------
 # Background worker (starts in a thread)
@@ -271,15 +255,14 @@ def submit_model(
     prompt_variant: str,
     submitter: str,
 ) -> str:
-    # Use preset if selected, otherwise use custom model ID
-    model_id = PRESET_MODELS.get(preset, "") or model.strip()
+    model_id, provider_id = resolve_model_selection(model, preset, provider)
     if not model_id:
         return "Please enter a model ID or select a preset."
 
     selected_tier = tier if tier != "all" else None
     request = SubmissionRequest(
         model=model_id,
-        provider=provider.strip(),
+        provider=provider_id,
         judge_model=judge_model.strip(),
         runs_per_task=int(runs),
         max_parallel_lanes=int(max_parallel_lanes),
@@ -292,20 +275,38 @@ def submit_model(
     return f"Submitted [{model_id}]! Job ID: {job.job_id}. Check the Queue tab."
 
 
-def submit_all_presets(runs: int, max_parallel_lanes: int, submitter: str) -> str:
-    """Submit all preset models at once."""
+def submit_all_presets(
+    preset_audience: str,
+    runs: int,
+    max_parallel_lanes: int,
+    submitter: str,
+) -> str:
+    """Submit all preset models from the selected audience track."""
+    presets = preset_models_for_audience(preset_audience)
+    if not presets:
+        return f"No presets configured for {preset_audience}."
+
     submitted = []
-    for name, model_id in PRESET_MODELS.items():
+    for preset in presets:
         request = SubmissionRequest(
-            model=model_id,
-            provider="",
+            model=preset.model_id,
+            provider=preset.provider,
             runs_per_task=int(runs),
             max_parallel_lanes=int(max_parallel_lanes),
             submitter=submitter.strip(),
         )
         job = asyncio.run(queue.submit(request))
-        submitted.append(f"{name} ({job.job_id})")
-    return f"Submitted {len(submitted)} models:\n" + "\n".join(f"  - {s}" for s in submitted)
+        submitted.append(f"{preset.label} ({job.job_id})")
+    return f"Submitted {len(submitted)} models from {preset_audience}:\n" + "\n".join(
+        f"  - {item}" for item in submitted
+    )
+
+
+def update_preset_choices(preset_audience: str):
+    return gr.update(
+        choices=[CUSTOM_PRESET_LABEL] + preset_labels_for_audience(preset_audience),
+        value=CUSTOM_PRESET_LABEL,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -952,7 +953,7 @@ STAT_JUDGE = (
 )
 STAT_PRESETS = (
     '<div class="stat-pill"><div class="label">Presets</div><div class="value teal">'
-    + str(len(PRESET_MODELS))
+    + str(len(PRESET_MODEL_MAP))
     + "</div></div>"
 )
 
@@ -986,11 +987,27 @@ with gr.Blocks(title="ClawBench", theme=clawbench_theme, css=CUSTOM_CSS) as demo
             "run via HuggingFace Inference API. You can also use locally hosted models "
             "(for example Ollama) when your OpenClaw runtime has them configured."
         )
+        gr.Markdown(
+            "Use `Preset Audience` to switch between the full Claw catalog and a smaller budget track. "
+            "The budget track keeps local and lower-cost options upfront, including `ollama/gpt-oss:20b`, "
+            "`ollama/qwen3.5:27b`, `huggingface/Qwen/Qwen3-32B`, and "
+            "`huggingface/google/gemma-4-26B-A4B-it`."
+        )
 
+        preset_audience_input = gr.Dropdown(
+            choices=list(PRESET_AUDIENCE_CHOICES),
+            value=PRESET_AUDIENCE_ALL,
+            label="Preset Audience",
+        )
         preset_input = gr.Dropdown(
-            choices=["(custom)"] + list(PRESET_MODELS.keys()),
-            value="(custom)",
+            choices=[CUSTOM_PRESET_LABEL] + preset_labels_for_audience(PRESET_AUDIENCE_ALL),
+            value=CUSTOM_PRESET_LABEL,
             label="Preset models",
+        )
+        preset_audience_input.change(
+            fn=update_preset_choices,
+            inputs=preset_audience_input,
+            outputs=preset_input,
         )
         with gr.Row():
             model_input = gr.Textbox(
@@ -1074,26 +1091,35 @@ with gr.Blocks(title="ClawBench", theme=clawbench_theme, css=CUSTOM_CSS) as demo
         )
         submit_all_btn.click(
             fn=submit_all_presets,
-            inputs=[runs_input, max_parallel_lanes_input, submitter_input],
+            inputs=[preset_audience_input, runs_input, max_parallel_lanes_input, submitter_input],
             outputs=submit_output,
         )
 
         gr.Markdown("""
-**All presets verified working on HF Inference API (free):**
+**Preset audiences:**
 
-| Model | Provider | Size | Runtime |
-|-------|----------|------|---------|
-| GLM 5.1 | Z.ai | 754B MoE | HF free |
-| GLM 5 | Z.ai | 400B MoE | HF free |
-| Qwen3 32B | Alibaba | 32B | HF free |
-| DeepSeek R1 | DeepSeek | 671B MoE | HF free |
-| Kimi K2 Instruct | Moonshot AI | MoE | HF free |
-| MiniMax M2.5 | MiniMax | MoE | HF free |
-| Gemma 4 26B MoE | Google | 26B MoE | HF free |
-| Llama 3.3 70B | Meta | 70B | HF free |
-| Llama 3.1 70B | Meta | 70B | HF free |
-| Claude Sonnet 4.6 | Anthropic | - | configured auth |
-| Claude Opus 4.6 | Anthropic | - | configured auth |
+| Audience | What it optimizes for | Presets |
+|---|---|---|
+| Claw Users | Full preset catalog, including provider-backed frontier options | Anthropic, HF open-weight, and Ollama presets |
+| Budget Researchers | Smaller local/free-friendly track | GPT-OSS 20B, Qwen 3.5 27B, Qwen3 32B, Gemma 4 26B |
+
+**Current preset catalog:**
+
+| Model | Provider | Audience |
+|---|---|---|
+| GPT-OSS 20B (Ollama) | Ollama | Claw Users, Budget Researchers |
+| Qwen 3.5 27B (Ollama) | Ollama | Claw Users, Budget Researchers |
+| Qwen3 32B | HuggingFace | Claw Users, Budget Researchers |
+| Gemma 4 26B MoE | HuggingFace | Claw Users, Budget Researchers |
+| GLM 5.1 | HuggingFace | Claw Users |
+| GLM 5 | HuggingFace | Claw Users |
+| DeepSeek R1 | HuggingFace | Claw Users |
+| Kimi K2 Instruct | HuggingFace | Claw Users |
+| MiniMax M2.5 | HuggingFace | Claw Users |
+| Llama 3.3 70B | HuggingFace | Claw Users |
+| Llama 3.1 70B | HuggingFace | Claw Users |
+| Claude Sonnet 4.6 | Anthropic | Claw Users |
+| Claude Opus 4.6 | Anthropic | Claw Users |
 """)
 
     with gr.Tab("Queue"):

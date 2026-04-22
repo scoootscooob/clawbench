@@ -1,145 +1,127 @@
-"""Compute Constraint Index C(q) per task from existing v4-19-full archive.
+#!/usr/bin/env python3
+"""Compute posterior Constraint Index C(q) from cached runs.
 
-Following "When LLMs Are Dreaming..." paper §Query-design:
+Task-level constraint index:
 
-  C(q) = z(PR(q)) + z(entropy(q)) + z(BOPS(q))
+    C(q) = -z(PR(q)) - z(H(q)) + z(BOPS(q))
 
 Where:
-  - PR(q): participation ratio = (tr Σ)² / tr(Σ²) of response embeddings
-           across all (model, run) responses to query q. Low PR = everyone
-           writes similar thing (prompt is constrained). High PR = responses
-           spread out (prompt is open-ended).
-  - entropy(q): Shannon entropy of (discretized) response-feature distribution.
-  - BOPS(q): Bayesian Optimal Prediction Score — how well can we predict
-             response given q? Proxied here as inter-run cosine similarity
-             for the same model (high similarity = high predictability).
 
-Since we don't have sentence-transformers, we use TF-IDF-style bag-of-words
-from the final assistant message per run. This is crude but measures the
-same signal — whether models produce similar vs divergent output.
+    PR(q)   = participation ratio of the task response covariance
+    H(q)    = Shannon entropy of the covariance eigenspectrum
+    BOPS(q) = within-model inter-run predictability proxy
 
-Output: reports/constraint_index.json with per-task C(q) components +
-        combined z-score.
+High C(q) means a task is more constrained: models and repeated runs tend to
+land in a narrower response manifold. Low C(q) means the task is more open or
+stylistically underconstrained.
 
-Usage:
-    .venv/bin/python3 scripts/compute_constraint_index.py
+This implementation uses a normalized bag-of-words representation built from
+the full assistant trajectory text plus tool-call names and compacted inputs.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
-import glob
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
-from scipy.stats import entropy as shannon_entropy
 
-ROOT = Path(__file__).resolve().parent.parent
-ARCH = ROOT / "data" / "run_cache_archive" / "v2026-4-19-full"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-MODELS = [
-    "anthropic_claude-opus-4-6", "anthropic_claude-opus-4-7",
-    "anthropic_claude-sonnet-4-6", "openai_gpt-5.4",
-    "google_gemini-3.1-pro-preview", "openrouter_z-ai_glm-5.1",
-    "openrouter_minimax_minimax-m2.7", "openrouter_moonshotai_kimi-k2.5",
-    "openrouter_qwen_qwen3.6-plus",
-]
+from clawbench.dynamics_archive import load_task_runs_by_model
 
 WORD_RE = re.compile(r"[a-z]{3,}")
-STOPWORDS = set("the and that with this have from what your will can but not "
-                "was will are been one would there been they will their has "
-                "had its were only some than about these which into also each "
-                "when where them how who them very much more most other then "
-                "here such does like just make many like want need take".split())
+STOPWORDS = set(
+    "the and that with this have from what your will can but not "
+    "was are been one would there they their has had its were only some "
+    "than about these which into also each when where them how who very "
+    "much more most other then here such does like just make many want need take".split()
+)
 
 
-def final_assistant_text(run_path: Path, max_chars: int = 4000) -> str:
-    """Extract the last assistant message text + tool-call arg summary."""
-    try:
-        d = json.loads(run_path.read_text())
-    except Exception:
-        return ""
-    msgs = d.get("transcript", {}).get("messages", [])
-    texts = []
-    for m in msgs:
-        if m.get("role") != "assistant":
-            continue
-        if m.get("text"):
-            texts.append(m["text"])
-        for tc in (m.get("tool_calls") or []):
-            name = tc.get("name", "")
-            args_str = json.dumps(tc.get("arguments", {}))[:200]
-            texts.append(f"{name} {args_str}")
-    blob = " ".join(texts)[:max_chars]
-    return blob
+def _assistant_trajectory_text(run, max_chars: int = 4000) -> str:
+    parts = []
+    for message in run.transcript.assistant_messages:
+        if message.text:
+            parts.append(message.text)
+        for call in message.tool_calls:
+            parts.append(call.name)
+            if call.input:
+                parts.append(json.dumps(call.input, sort_keys=True)[:200])
+    return " ".join(p for p in parts if p).strip()[:max_chars]
+
+
+def _fallback_text_from_any_message(run) -> str:
+    for msg in reversed(run.transcript.messages):
+        parts = []
+        if msg.text:
+            parts.append(msg.text)
+        for call in msg.tool_calls:
+            parts.append(call.name)
+            if call.input:
+                parts.append(json.dumps(call.input, sort_keys=True)[:200])
+        if parts:
+            return " ".join(parts).strip()
+    return ""
 
 
 def tokenize(text: str) -> list[str]:
-    return [w for w in WORD_RE.findall(text.lower()) if w not in STOPWORDS]
+    return [w for w in WORD_RE.findall((text or "").lower()) if w not in STOPWORDS]
 
 
 def build_vocab(texts: list[str], top_k: int = 500) -> dict[str, int]:
-    """Build a vocab of the top-k most common tokens across all texts."""
-    counter = Counter()
-    for t in texts:
-        counter.update(set(tokenize(t)))
-    return {w: i for i, (w, _) in enumerate(counter.most_common(top_k))}
+    counts = Counter()
+    for text in texts:
+        counts.update(set(tokenize(text)))
+    return {word: idx for idx, (word, _) in enumerate(counts.most_common(top_k))}
 
 
 def vectorize(text: str, vocab: dict[str, int]) -> np.ndarray:
-    """TF-IDF-ish: token frequency normalized to unit L2 for cosine geometry."""
-    v = np.zeros(len(vocab), dtype=np.float32)
+    vec = np.zeros(len(vocab), dtype=np.float32)
     toks = tokenize(text)
     if not toks:
-        return v
+        return vec
     counts = Counter(toks)
-    for w, c in counts.items():
-        if w in vocab:
-            v[vocab[w]] = c
-    n = np.linalg.norm(v)
-    return v / n if n > 0 else v
+    for word, cnt in counts.items():
+        if word in vocab:
+            vec[vocab[word]] = cnt
+    norm = np.linalg.norm(vec)
+    return vec / norm if norm > 0 else vec
 
 
 def participation_ratio(X: np.ndarray) -> float:
-    """PR(X) = (tr Σ)² / tr(Σ²). Measures effective dimensionality 1–d."""
+    """PR(X) = (tr Sigma)^2 / tr(Sigma^2), an effective dimensionality proxy."""
     if X.shape[0] < 2:
         return 1.0
-    Sigma = np.cov(X.T)
-    if Sigma.ndim == 0:
+    sigma = np.cov(X.T)
+    if sigma.ndim == 0:
         return 1.0
-    tr = np.trace(Sigma)
-    tr_sq = np.trace(Sigma @ Sigma)
+    tr = np.trace(sigma)
+    tr_sq = np.trace(sigma @ sigma)
     if tr_sq < 1e-12:
         return 1.0
-    return float(tr ** 2 / tr_sq)
+    return float((tr**2) / tr_sq)
 
 
-def response_entropy(X: np.ndarray, n_clusters: int = 8) -> float:
-    """Entropy of a k-means-like discretization of responses.
-
-    Since we have small n per task (~27 responses), we cluster by nearest-
-    centroid using the top-few PCA directions. Simpler: use normalized
-    eigenvalues of covariance as a proxy for entropy over principal modes.
-    """
+def response_entropy(X: np.ndarray) -> float:
+    """Entropy over normalized covariance eigenvalues, in bits."""
     if X.shape[0] < 2:
         return 0.0
-    Sigma = np.cov(X.T)
-    eigs = np.linalg.eigvalsh(Sigma)
+    sigma = np.cov(X.T)
+    eigs = np.linalg.eigvalsh(sigma)
     eigs = np.clip(eigs, 1e-12, None)
-    eigs = eigs / eigs.sum()
-    return float(shannon_entropy(eigs, base=2))
+    probs = eigs / eigs.sum()
+    return float(-np.sum(probs * np.log2(probs)))
 
 
 def bops_inter_run_predictability(run_vecs: dict[str, list[np.ndarray]]) -> float:
-    """BOPS proxy: inter-run cosine similarity within same model.
-
-    High similarity = predictable (high BOPS). Low similarity = novel each run.
-    Returns mean cosine across all pairs within each model, averaged across models.
-    """
+    """Mean within-model pairwise cosine similarity across repeated runs."""
     per_model_means = []
-    for _model, vecs in run_vecs.items():
+    for vecs in run_vecs.values():
         if len(vecs) < 2:
             continue
         sims = []
@@ -154,91 +136,88 @@ def bops_inter_run_predictability(run_vecs: dict[str, list[np.ndarray]]) -> floa
     return float(np.mean(per_model_means)) if per_model_means else 0.0
 
 
+def zscore(value: float, arr: np.ndarray) -> float:
+    std = arr.std()
+    return float((value - arr.mean()) / std) if std > 1e-12 else 0.0
+
+
 def main() -> None:
-    # Gather: per-task list of texts + per-model list of per-run vectors
+    parser = argparse.ArgumentParser(description="Compute posterior constraint index per task")
+    parser.add_argument("--archive-dir", type=Path, default=Path(".clawbench/run_cache"))
+    parser.add_argument("--reports-dir", type=Path, default=Path("reports"))
+    parser.add_argument("--tier", choices=["tier1", "tier2", "tier3", "tier4", "tier5"], default=None)
+    args = parser.parse_args()
+
+    grouped = load_task_runs_by_model(args.archive_dir, tier=args.tier)
+    if not grouped:
+        raise SystemExit(f"No cached runs found under {args.archive_dir}")
+
     per_task_texts: dict[str, list[str]] = defaultdict(list)
-    per_task_model_runs: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
-    for model in MODELS:
-        model_dir = ARCH / model
-        if not model_dir.exists():
-            continue
-        for task_dir in model_dir.iterdir():
-            if not task_dir.is_dir():
-                continue
-            task = task_dir.name
-            for rf in sorted(task_dir.glob("run*.json")):
-                text = final_assistant_text(rf)
+    per_task_model_texts: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+
+    use_fallback_messages = False
+    for model_name, task_runs in grouped.items():
+        for task_id, runs in task_runs.items():
+            for run in runs:
+                text = _assistant_trajectory_text(run)
                 if text:
-                    per_task_texts[task].append(text)
-                    per_task_model_runs[task][model].append(text)
+                    per_task_texts[task_id].append(text)
+                    per_task_model_texts[task_id][model_name].append(text)
 
-    print(f"Tasks with responses: {len(per_task_texts)}")
+    all_texts = [text for texts in per_task_texts.values() for text in texts]
+    if not all_texts:
+        use_fallback_messages = True
+        for model_name, task_runs in grouped.items():
+            for task_id, runs in task_runs.items():
+                for run in runs:
+                    text = _fallback_text_from_any_message(run)
+                    if text:
+                        per_task_texts[task_id].append(text)
+                        per_task_model_texts[task_id][model_name].append(text)
+        all_texts = [text for texts in per_task_texts.values() for text in texts]
 
-    # Build a GLOBAL vocab across all tasks for comparable vector spaces
-    all_texts = [t for ts in per_task_texts.values() for t in ts]
+    if not all_texts:
+        raise SystemExit("No usable text found in cached transcripts.")
+
     vocab = build_vocab(all_texts, top_k=500)
-    print(f"Global vocab size: {len(vocab)}")
-
-    # Compute per-task metrics
-    per_task: dict[str, dict] = {}
-    for task, texts in sorted(per_task_texts.items()):
-        if len(texts) < 5:
-            continue
-        X = np.stack([vectorize(t, vocab) for t in texts])  # (n_responses, vocab_dim)
+    per_task: dict[str, dict[str, float | str]] = {}
+    for task_id, texts in sorted(per_task_texts.items()):
+        X = np.stack([vectorize(text, vocab) for text in texts])
         pr = participation_ratio(X)
         ent = response_entropy(X)
-        # BOPS: within-model run predictability
-        model_vecs: dict[str, list[np.ndarray]] = {}
-        for m, ts in per_task_model_runs[task].items():
-            model_vecs[m] = [vectorize(t, vocab) for t in ts]
+        model_vecs = {
+            model_name: [vectorize(text, vocab) for text in model_texts]
+            for model_name, model_texts in per_task_model_texts[task_id].items()
+        }
         bops = bops_inter_run_predictability(model_vecs)
-        per_task[task] = {
+        per_task[task_id] = {
             "n_responses": len(texts),
             "PR": pr,
             "entropy": ent,
             "BOPS": bops,
+            "data_source": "fallback_any_message" if use_fallback_messages else "assistant_final",
         }
 
-    # Z-score each component across tasks → combine into C(q)
+    if not per_task:
+        raise SystemExit("Not enough data to compute C(q).")
+
     prs = np.array([v["PR"] for v in per_task.values()])
     ents = np.array([v["entropy"] for v in per_task.values()])
     bopss = np.array([v["BOPS"] for v in per_task.values()])
 
-    def z(x, arr):
-        return float((x - arr.mean()) / (arr.std() or 1.0))
+    for task_id, v in per_task.items():
+        z_pr = zscore(v["PR"], prs)
+        z_ent = zscore(v["entropy"], ents)
+        z_bops = zscore(v["BOPS"], bopss)
+        v["z_PR"] = z_pr
+        v["z_entropy"] = z_ent
+        v["z_BOPS"] = z_bops
+        v["C_q"] = -z_pr - z_ent + z_bops
 
-    for task, v in per_task.items():
-        zpr = z(v["PR"], prs)
-        zent = z(v["entropy"], ents)
-        zbops = z(v["BOPS"], bopss)
-        # Paper: higher PR/entropy = MORE open-ended. Higher BOPS = MORE predictable.
-        # "Constraint" = opposite of openness. C(q) high ⇒ constrained task.
-        # So: C(q) = −z(PR) − z(entropy) + z(BOPS)
-        v["z_PR"] = zpr
-        v["z_entropy"] = zent
-        v["z_BOPS"] = zbops
-        v["C_q"] = -zpr - zent + zbops
-
-    # Sort + print
-    ranked = sorted(per_task.items(), key=lambda kv: -kv[1]["C_q"])
-    print(f"\n{'Task':<38} {'n':>3}  {'PR':>5}  {'H':>5}  {'BOPS':>5}  {'C(q)':>6}  (constraint level)")
-    print("-" * 78)
-    for task, v in ranked:
-        print(f"{task:<38} {v['n_responses']:>3}  {v['PR']:>5.2f}  {v['entropy']:>5.2f}  "
-              f"{v['BOPS']:>5.2f}  {v['C_q']:>+6.2f}")
-
-    out_path = ROOT / "reports" / "constraint_index.json"
-    out_path.parent.mkdir(exist_ok=True)
-    out_path.write_text(json.dumps(per_task, indent=2))
-    print(f"\nWrote: {out_path}")
-
-    # Bucket summary
-    highs = [t for t, v in per_task.items() if v["C_q"] > 0.5]
-    lows = [t for t, v in per_task.items() if v["C_q"] < -0.5]
-    mids = [t for t, v in per_task.items() if -0.5 <= v["C_q"] <= 0.5]
-    print(f"\nHigh-constraint (C>+0.5): {len(highs)} tasks  (responses converge)")
-    print(f"Mid:                       {len(mids)} tasks")
-    print(f"Low-constraint (C<-0.5):   {len(lows)} tasks  (responses diverge — open-ended)")
+    args.reports_dir.mkdir(parents=True, exist_ok=True)
+    out_path = args.reports_dir / "constraint_index.json"
+    out_path.write_text(json.dumps(per_task, indent=2), encoding="utf-8")
+    print(f"Wrote: {out_path}")
 
 
 if __name__ == "__main__":

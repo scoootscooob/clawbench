@@ -116,6 +116,11 @@ def cli(verbose: bool) -> None:
     show_default=True,
     help="Where to write ecosystem insight files after a --profile run.",
 )
+@click.option(
+    "--dynamics",
+    is_flag=True,
+    help="Run quick post-benchmark dynamics analysis. Prefer dynamics-report for offline cache/archive analysis.",
+)
 def run(
     model: str,
     gateway_token: str,
@@ -137,6 +142,7 @@ def run(
     browser_concurrency: int,
     profile: Path | None,
     insights_dir: Path,
+    dynamics: bool,
 ) -> None:
     gateway_config = GatewayConfig(token=gateway_token)
     harness = BenchmarkHarness(
@@ -165,6 +171,9 @@ def run(
         json.dump(result.model_dump(), handle, indent=2)
     click.echo(f"\nResults saved to {out_path}")
 
+    if dynamics:
+        _run_dynamics_analysis(harness.last_task_runs, out_path)
+
     if profile is not None:
         _run_v05_diagnostic(
             profile_path=profile,
@@ -177,6 +186,83 @@ def run(
         from clawbench.upload import upload_result
 
         asyncio.run(upload_result(result))
+
+
+@cli.command("dynamics-report")
+@click.option(
+    "--archive-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    required=True,
+    help="Path to a run cache/archive root or a single model cache directory.",
+)
+@click.option(
+    "--model",
+    default=None,
+    help="Model id to select when the archive root contains multiple model directories.",
+)
+@click.option("--tier", type=click.Choice(["tier1", "tier2", "tier3", "tier4", "tier5"]))
+@click.option("--task", "task_ids", multiple=True, help="Specific task IDs to include from the archive.")
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path),
+    default=Path("results/offline_dynamics"),
+    show_default=True,
+    help="Directory where dynamics.json and plots will be written.",
+)
+@click.option(
+    "--no-plots",
+    is_flag=True,
+    help="Write only dynamics.json and skip plot rendering.",
+)
+def dynamics_report(
+    archive_dir: Path,
+    model: str | None,
+    tier: str | None,
+    task_ids: tuple[str, ...],
+    output_dir: Path,
+    no_plots: bool,
+) -> None:
+    """Generate dynamics plots and a JSON report from cached TaskRunResult archives."""
+    from clawbench.dynamics_archive import load_task_runs_archive
+
+    try:
+        task_runs = load_task_runs_archive(
+            archive_dir=archive_dir,
+            model=model,
+            task_ids=task_ids,
+            tier=tier,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not task_runs:
+        raise click.ClickException(f"No cached runs found under {archive_dir}")
+
+    report_path, plots, n_runs = _write_dynamics_report(
+        task_runs,
+        output_dir,
+        generate_plots=not no_plots,
+    )
+    click.echo(f"Loaded {n_runs} cached runs across {len(task_runs)} tasks")
+    click.echo(f"Dynamics report saved to {report_path}")
+    click.echo(f"Saved {len(plots)} plots to {output_dir}/")
+
+
+def _write_dynamics_report(
+    task_runs: dict[str, list],
+    output_dir: Path,
+    *,
+    generate_plots: bool = True,
+) -> tuple[Path, list[Path], int]:
+    from clawbench.dynamics_archive import write_dynamics_report
+
+    report_path, plots = write_dynamics_report(
+        task_runs,
+        output_dir,
+        generate_plots=generate_plots,
+    )
+    n_runs = sum(len(runs) for runs in task_runs.values())
+    return report_path, plots, n_runs
 
 
 def _run_v05_diagnostic(
@@ -691,6 +777,24 @@ def show(result_file: str) -> None:
             f"rel={task.reliability_score:.2f} delivery={task.delivery_outcome_counts} "
             f"tok/pass={task.tokens_per_pass:.0f} p50={task.median_duration_ms:.0f}ms fail={top_failure}"
         )
+
+
+def _run_dynamics_analysis(
+    task_runs: dict[str, list],
+    result_path: str,
+) -> None:
+    """Compute stratified dynamics from raw TaskRunResult objects."""
+    run_stem = Path(result_path).stem
+    dyn_dir = Path(result_path).parent / f"{run_stem}_dynamics"
+    try:
+        dyn_path, plots, n_runs = _write_dynamics_report(task_runs, dyn_dir)
+    except ValueError as exc:
+        click.echo(str(exc))
+        return
+
+    click.echo(f"\n[dynamics] Analysed {n_runs} cached runs")
+    click.echo(f"  Dynamics report saved to {dyn_path}")
+    click.echo(f"  Saved {len(plots)} plots to {dyn_dir}/")
 
 
 def main() -> None:
