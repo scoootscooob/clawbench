@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import subprocess
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import websockets
@@ -150,18 +151,46 @@ process.stdout.write(
 """
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float from the environment, falling back on the default.
+
+    Bad / unparseable values are ignored (we log a warning below) so a
+    typo in ``CLAWBENCH_CONNECT_TIMEOUT`` never silently bricks a run.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("ignoring invalid %s=%r; using default %s", name, raw, default)
+        return default
+
+
 @dataclass
 class GatewayConfig:
     url: str = "ws://localhost:18789"
     token: str = ""
-    connect_timeout: float = 15.0
+    # First WebSocket connect + protocol handshake + auth challenge.
+    # In practice the gateway is up on ``/healthz`` well before the WS
+    # handshake path is fully ready in containerised / cold-start
+    # setups -- we've measured ``phase0_session_setup`` ~ 20-25s against
+    # a newly started OpenClaw gateway -- so 15s is too aggressive and
+    # turns into spurious ``empty_response`` failures at the task level.
+    # 30s is still short enough to fail fast on a truly wedged gateway.
+    # Override with env var ``CLAWBENCH_CONNECT_TIMEOUT``.
+    connect_timeout: float = field(
+        default_factory=lambda: _env_float("CLAWBENCH_CONNECT_TIMEOUT", 30.0)
+    )
     # Per-RPC timeout. 60s is generous for what are sub-second calls
     # in steady state (agents.create, sessions.create, etc.); fail-fast
     # here converts a transient gateway hang into a recoverable error
     # instead of a 5-minute worker stall. Long-running operations like
     # send_and_wait pass an explicit per-call timeout and do not use
-    # this default.
-    request_timeout: float = 60.0
+    # this default.  Override with env var ``CLAWBENCH_REQUEST_TIMEOUT``.
+    request_timeout: float = field(
+        default_factory=lambda: _env_float("CLAWBENCH_REQUEST_TIMEOUT", 60.0)
+    )
 
 
 class GatewayClient:
