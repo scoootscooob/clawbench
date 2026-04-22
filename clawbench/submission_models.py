@@ -127,6 +127,39 @@ def preset_labels_for_audience(audience: str | None) -> list[str]:
     return [preset.label for preset in preset_models_for_audience(audience)]
 
 
+def build_preset_submission_specs(
+    audience: str | None,
+    *,
+    runs: int,
+    max_parallel_lanes: int,
+    submitter: str,
+    judge_model: str = "",
+    tier: str | None = None,
+    scenario: str | None = None,
+    prompt_variant: str = "clear",
+) -> list[tuple[PresetModel, dict[str, object]]]:
+    """Return per-preset SubmissionRequest kwargs for the selected audience."""
+    normalized_submitter = submitter.strip()
+    normalized_judge_model = judge_model.strip()
+    return [
+        (
+            preset,
+            {
+                "model": preset.model_id,
+                "provider": preset.provider,
+                "judge_model": normalized_judge_model,
+                "runs_per_task": int(runs),
+                "max_parallel_lanes": int(max_parallel_lanes),
+                "tier": tier,
+                "scenario": scenario,
+                "prompt_variant": prompt_variant,
+                "submitter": normalized_submitter,
+            },
+        )
+        for preset in preset_models_for_audience(audience)
+    ]
+
+
 def resolve_model_selection(
     model: str,
     preset_label: str,
@@ -138,8 +171,7 @@ def resolve_model_selection(
     preset = _PRESET_BY_LABEL.get(preset_label)
     if preset is not None:
         selected_model = preset.model_id
-        if not selected_provider:
-            selected_provider = preset.provider
+        selected_provider = preset.provider
 
     if not selected_provider:
         selected_provider = infer_provider(selected_model)

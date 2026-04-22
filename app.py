@@ -27,6 +27,7 @@ from clawbench.hub import (
     resolve_dataset_repo,
 )
 from clawbench.submission_models import (
+    build_preset_submission_specs,
     CUSTOM_PRESET_LABEL,
     PRESET_AUDIENCE_ALL,
     PRESET_AUDIENCE_CHOICES,
@@ -279,22 +280,31 @@ def submit_all_presets(
     preset_audience: str,
     runs: int,
     max_parallel_lanes: int,
+    judge_model: str,
+    tier: str | None,
+    scenario: str | None,
+    prompt_variant: str,
     submitter: str,
 ) -> str:
     """Submit all preset models from the selected audience track."""
-    presets = preset_models_for_audience(preset_audience)
-    if not presets:
+    selected_tier = tier if tier != "all" else None
+    selected_scenario = scenario if scenario != "all" else None
+    preset_specs = build_preset_submission_specs(
+        preset_audience,
+        runs=int(runs),
+        max_parallel_lanes=int(max_parallel_lanes),
+        judge_model=judge_model,
+        tier=selected_tier,
+        scenario=selected_scenario,
+        prompt_variant=prompt_variant,
+        submitter=submitter,
+    )
+    if not preset_specs:
         return f"No presets configured for {preset_audience}."
 
     submitted = []
-    for preset in presets:
-        request = SubmissionRequest(
-            model=preset.model_id,
-            provider=preset.provider,
-            runs_per_task=int(runs),
-            max_parallel_lanes=int(max_parallel_lanes),
-            submitter=submitter.strip(),
-        )
+    for preset, request_kwargs in preset_specs:
+        request = SubmissionRequest(**request_kwargs)
         job = asyncio.run(queue.submit(request))
         submitted.append(f"{preset.label} ({job.job_id})")
     return f"Submitted {len(submitted)} models from {preset_audience}:\n" + "\n".join(
@@ -1091,7 +1101,16 @@ with gr.Blocks(title="ClawBench", theme=clawbench_theme, css=CUSTOM_CSS) as demo
         )
         submit_all_btn.click(
             fn=submit_all_presets,
-            inputs=[preset_audience_input, runs_input, max_parallel_lanes_input, submitter_input],
+            inputs=[
+                preset_audience_input,
+                runs_input,
+                max_parallel_lanes_input,
+                judge_model_input,
+                tier_input,
+                scenario_input,
+                prompt_variant_input,
+                submitter_input,
+            ],
             outputs=submit_output,
         )
 

@@ -15,7 +15,7 @@ license: mit
 
 **Rigorous agent evaluation. Signal-curated tasks. Dynamical-systems diagnostics.**
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB.svg?style=flat-square)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB.svg?style=flat-square)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 [![Core v1: 19 tasks](https://img.shields.io/badge/Core%20v1-19%20tasks-blue.svg?style=flat-square)](tasks-public/)
 [![Diagnostics](https://img.shields.io/badge/diagnostics-dynamical-blueviolet.svg?style=flat-square)](#3-dynamical-systems-diagnostics-how-agents-fail-not-just-whether)

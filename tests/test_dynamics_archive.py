@@ -107,7 +107,7 @@ def test_build_dynamics_report_includes_pairwise_sensitivity():
         ]
     }
 
-    report, _plotter, _plot_data = build_dynamics_report(task_runs, include_pca=False)
+    report, _plot_data = build_dynamics_report(task_runs, include_pca=False)
 
     same_task = report["sensitivity"]["same_task"]
     assert same_task["n_pairs"] == 1

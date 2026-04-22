@@ -21,7 +21,6 @@ from clawbench.dynamics import (
     stratify_by_tier,
     stratify_by_tool_mix,
 )
-from clawbench.dynamics_plots import generate_all_plots
 from clawbench.schemas import TaskRunResult
 
 _TIER_PREFIXES = {
@@ -319,7 +318,7 @@ def _build_sensitivity_sections(
 def build_dynamics_report(
     task_runs: dict[str, list[TaskRunResult]],
     include_pca: bool = True,
-) -> tuple[dict, list]:
+) -> tuple[dict[str, object], dict[str, object]]:
     """Compute stratified dynamics report data from cached runs."""
     all_runs = [run for runs in task_runs.values() for run in runs]
     if not all_runs:
@@ -438,7 +437,7 @@ def build_dynamics_report(
             events.append(float(len(run.transcript.assistant_messages)))
             censored.append(True)
     km_points = kaplan_meier(events, censored)
-    return report, generate_all_plots, {
+    return report, {
         "valid_runs": valid_runs,
         "dynamics_list": dynamics_list,
         "stratified": stratified,
@@ -454,7 +453,7 @@ def write_dynamics_report(
     generate_plots: bool = True,
 ) -> tuple[Path, list[Path]]:
     """Write the dynamics report JSON and plots to an output directory."""
-    report, plotter, plot_data = build_dynamics_report(task_runs, include_pca=generate_plots)
+    report, plot_data = build_dynamics_report(task_runs, include_pca=generate_plots)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     report_path = out_dir / report_name
@@ -462,7 +461,9 @@ def write_dynamics_report(
 
     plots: list[Path] = []
     if generate_plots:
-        plots = plotter(
+        from clawbench.dynamics_plots import generate_all_plots
+
+        plots = generate_all_plots(
             plot_data["dynamics_list"],
             plot_data["valid_runs"],
             plot_data["stratified"],
