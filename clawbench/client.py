@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -154,17 +155,22 @@ process.stdout.write(
 def _env_float(name: str, default: float) -> float:
     """Read a float from the environment, falling back on the default.
 
-    Bad / unparseable values are ignored (we log a warning below) so a
-    typo in ``CLAWBENCH_CONNECT_TIMEOUT`` never silently bricks a run.
+    Bad, non-finite, or non-positive values are ignored (we log a
+    warning below) so a typo in ``CLAWBENCH_CONNECT_TIMEOUT`` never
+    silently bricks a run.
     """
     raw = os.environ.get(name)
     if raw is None or raw == "":
         return default
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         logger.warning("ignoring invalid %s=%r; using default %s", name, raw, default)
         return default
+    if not math.isfinite(value) or value <= 0:
+        logger.warning("ignoring invalid %s=%r; using default %s", name, raw, default)
+        return default
+    return value
 
 
 @dataclass

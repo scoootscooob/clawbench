@@ -28,8 +28,9 @@ def test_gateway_config_env_overrides(monkeypatch):
     assert cfg.request_timeout == 120.0
 
 
-def test_gateway_config_invalid_env_falls_back_to_default(monkeypatch, caplog):
-    monkeypatch.setenv("CLAWBENCH_CONNECT_TIMEOUT", "not-a-number")
+@pytest.mark.parametrize("raw", ["not-a-number", "nan", "inf", "0", "-1"])
+def test_gateway_config_invalid_env_falls_back_to_default(monkeypatch, caplog, raw):
+    monkeypatch.setenv("CLAWBENCH_CONNECT_TIMEOUT", raw)
     with caplog.at_level("WARNING"):
         cfg = GatewayConfig()
     assert cfg.connect_timeout == 30.0
