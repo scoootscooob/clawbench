@@ -33,9 +33,9 @@ against your own configuration.
 
 | Dimension | Breakdown |
 |---|---|
-| Tiers | T1=2, T2=7, T3=5, T4=4, T5=1 |
-| Families | tools=7, coding=2, repo=3, browser=2, multi_tool=3, adversarial=1 |
-| Capabilities | bugfix, refactor, test_authoring, multifile_reasoning, browser_debugging, structured_output, graceful_refusal, delegation, tool_composition, research_synthesis, cross_repo_change, memory_continuation |
+| Tiers | T1=2, T2=6, T3=5, T4=5, T5=1 |
+| Families | tools=8, coding=2, repo=3, browser=2, multi_tool=3, adversarial=1 |
+| Capabilities | bugfix, test_authoring, multifile_reasoning, browser_debugging, structured_output, graceful_refusal, delegation, tool_composition, research_synthesis, cross_repo_change, memory_continuation |
 
 ## Directory layout
 
@@ -44,9 +44,9 @@ tasks-public/
 ├── MANIFEST.yaml          # Machine-readable task list + metadata
 ├── README.md              # This file
 ├── tier1/                 # 2 task YAMLs
-├── tier2/                 # 7 task YAMLs
+├── tier2/                 # 6 task YAMLs
 ├── tier3/                 # 5 task YAMLs
-├── tier4/                 # 4 task YAMLs
+├── tier4/                 # 5 task YAMLs
 ├── tier5/                 # 1 task YAML
 └── assets/                # 19 asset packs (verifier scripts + fixtures)
 ```

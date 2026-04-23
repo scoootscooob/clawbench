@@ -10,7 +10,7 @@ from pathlib import Path
 import click
 
 from clawbench.client import GatewayConfig
-from clawbench.harness import BenchmarkHarness
+from clawbench.harness import BenchmarkHarness, KNOWN_ADAPTERS
 
 SCENARIO_CHOICES = [
     "file_system_ops",
@@ -41,6 +41,13 @@ def cli(verbose: bool) -> None:
 
 @cli.command()
 @click.option("--model", "-m", required=True, help="Model to benchmark")
+@click.option(
+    "--adapter",
+    type=click.Choice(KNOWN_ADAPTERS),
+    default="openclaw",
+    show_default=True,
+    help="Agent harness adapter. OpenClaw is executable today; other adapters are tracked targets.",
+)
 @click.option("--gateway-token", envvar="OPENCLAW_GATEWAY_TOKEN", default="", help="Gateway auth token")
 @click.option(
     "--judge-model",
@@ -123,6 +130,7 @@ def cli(verbose: bool) -> None:
 )
 def run(
     model: str,
+    adapter: str,
     gateway_token: str,
     judge_model: str,
     runs: int,
@@ -148,6 +156,7 @@ def run(
     harness = BenchmarkHarness(
         gateway_config=gateway_config,
         model=model,
+        adapter=adapter,
         judge_model=judge_model,
         runs_per_task=runs,
         tier=tier,
@@ -178,6 +187,7 @@ def run(
         _run_v05_diagnostic(
             profile_path=profile,
             result=result,
+            task_runs=harness.last_task_runs,
             runs_per_task=runs,
             insights_dir=insights_dir,
         )
@@ -269,6 +279,7 @@ def _run_v05_diagnostic(
     *,
     profile_path: Path,
     result,
+    task_runs: dict[str, list] | None,
     runs_per_task: int,
     insights_dir: Path,
 ) -> None:
@@ -278,6 +289,7 @@ def _run_v05_diagnostic(
         DEFAULT_MANIFEST_DIR,
         DEFAULT_SUBMISSIONS_DIR,
         ensure_data_dirs,
+        infer_registration_traces_from_manifests,
         load_manifests,
         write_submission_record,
     )
@@ -291,6 +303,7 @@ def _run_v05_diagnostic(
     plugin_profile = PluginProfile.from_yaml_file(profile_path)
     plugin_ids = [e.id for e in plugin_profile.plugins]
     manifests = load_manifests(DEFAULT_MANIFEST_DIR, plugin_ids)
+    traces = infer_registration_traces_from_manifests(plugin_profile, manifests)
     db = HistoricalDatabase(path=DEFAULT_DB_PATH)
 
     # Extract per-task scores + tier map from the BenchmarkResult
@@ -301,12 +314,16 @@ def _run_v05_diagnostic(
         if getattr(task_stats, "tier", ""):
             tier_of[task_stats.task_id] = task_stats.tier
 
+    transcripts = _merge_task_transcripts_from_runs(task_runs or {})
+
     diagnostic = submit_run(
         profile=plugin_profile,
         manifests=manifests,
         db=db,
         actual_overall_score=float(result.overall_score),
         actual_per_task_scores=actual_per_task,
+        traces=traces,
+        transcripts=transcripts,
         tier_of=tier_of or None,
         n_runs_contributing=runs_per_task,
     )
@@ -327,6 +344,22 @@ def _run_v05_diagnostic(
         f"(fingerprint {diagnostic.fingerprint_hash}). "
         f"Insights published to {insights_dir}."
     )
+
+
+def _merge_task_transcripts_from_runs(task_runs: dict[str, list]):
+    """Merge all run transcripts per task for the v0.5 utilization audit."""
+    if not task_runs:
+        return None
+    from clawbench.schemas import Transcript
+
+    merged: dict[str, Transcript] = {}
+    for task_id, runs in task_runs.items():
+        transcript = Transcript()
+        for run in runs:
+            transcript.messages.extend(getattr(run.transcript, "messages", []))
+        if transcript.messages:
+            merged[task_id] = transcript
+    return merged or None
 
 
 @cli.command()

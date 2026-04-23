@@ -245,9 +245,9 @@ Core v1 is a signal-curated public release of 19 tasks from the internal 40-task
 | Tier | Core v1 count | What it tests | Examples |
 |------|:---:|---|---|
 | **Tier 1** | 2 | Single-tool basics | Bugfix discount calc, quick file note |
-| **Tier 2** | 7 | Multi-step, 2-3 tools | Config loader repair, browser form fix, priv redaction |
+| **Tier 2** | 6 | Multi-step, 2-3 tools | Config loader repair, browser form fix, priv redaction |
 | **Tier 3** | 5 | Complex orchestration | SQL query analysis, inbox triage, data pipeline report |
-| **Tier 4** | 4 | Cross-system reasoning | Cross-repo migration, delegation repair, browser research+code |
+| **Tier 4** | 5 | Cross-system reasoning | Cross-repo migration, delegation repair, memory continuation, browser research+code |
 | **Tier 5** | 1 | Adversarial | Hallucination-resistant evidence |
 
 Full manifest: [`tasks-public/MANIFEST.yaml`](tasks-public/MANIFEST.yaml).

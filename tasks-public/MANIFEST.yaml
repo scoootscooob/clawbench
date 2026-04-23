@@ -43,12 +43,12 @@ selection_basis:
 coverage:
   tiers:
     tier1: 2
-    tier2: 7
+    tier2: 6
     tier3: 5
-    tier4: 4
+    tier4: 5
     tier5: 1
   families:
-    tools: 7
+    tools: 8
     coding: 2
     repo: 3
     browser: 2
